@@ -374,6 +374,30 @@ namespace LiteHtmlUnity
         /// child elements rather than only text.
         /// </para>
         /// </remarks>
+        /// <summary>
+        /// Replaces the inline style of one element without re-parsing, and
+        /// schedules the layout that must follow. Returns false when the style
+        /// was already what you asked for.
+        /// </summary>
+        /// <remarks>
+        /// The path for animating a bar's height, a gradient's angle or a
+        /// colour. Unlike <see cref="SetText"/> it can never skip layout — a
+        /// declaration has no measured size to compare against — so the cost
+        /// scales with the mutated element's subtree. Animate a leaf, not the
+        /// container a long list hangs off.
+        /// </remarks>
+        public bool SetStyle(string selector, string css)
+        {
+            if (_document == null || !_document.SetStyle(selector, css))
+            {
+                return false;
+            }
+
+            ParseMs = 0f;
+            _needsLayout = true;
+            return true;
+        }
+
         public bool SetText(string selector, string text)
         {
             if (_document == null || !_document.SetText(selector, text))

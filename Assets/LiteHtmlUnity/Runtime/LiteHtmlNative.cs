@@ -59,6 +59,11 @@ namespace LiteHtmlUnity
                                                [MarshalAs(UnmanagedType.LPUTF8Str)] string userCss);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int lhu_set_style(IntPtr ctx,
+                                               [MarshalAs(UnmanagedType.LPUTF8Str)] string selector,
+                                               [MarshalAs(UnmanagedType.LPUTF8Str)] string css);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         public static extern int lhu_set_text(IntPtr ctx,
                                               [MarshalAs(UnmanagedType.LPUTF8Str)] string selector,
                                               [MarshalAs(UnmanagedType.LPUTF8Str)] string utf8);

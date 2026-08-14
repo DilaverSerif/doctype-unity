@@ -293,6 +293,36 @@ namespace LiteHtmlUnity
         }
 
         /// <summary>
+        /// Replaces the inline style of the first element matching
+        /// <paramref name="selector"/> without re-parsing the document. Returns
+        /// true when the style actually changed.
+        /// </summary>
+        /// <remarks>
+        /// This is the path for animating: a bar's height, a gradient's angle, a
+        /// colour. Rebuilding the markup instead re-parses the whole page, which
+        /// on a mid-range phone costs milliseconds per frame.
+        /// <para>
+        /// Unlike <see cref="SetText"/> it can never skip layout — a declaration
+        /// has no measured size to compare — so cost scales with the mutated
+        /// element's subtree. Animate a leaf, not a container that a long list
+        /// hangs off.
+        /// </para>
+        /// <para>
+        /// Changing display, float or position rebuilds the render tree for that
+        /// subtree; correct, but roughly a fresh layout, so not a per-frame move.
+        /// </para>
+        /// </remarks>
+        public bool SetStyle(string selector, string css)
+        {
+            if (!IsValid || string.IsNullOrEmpty(selector))
+            {
+                return false;
+            }
+
+            return LiteHtmlNative.lhu_set_style(_ctx, selector, css ?? string.Empty) != 0;
+        }
+
+        /// <summary>
         /// Replaces the text of the first element matching <paramref name="selector"/>
         /// without re-parsing the document. Returns true when the text actually
         /// changed, so the caller can skip a re-layout when it did not.
