@@ -237,14 +237,23 @@ namespace LiteHtmlUnity.Samples
             // the whole page to change four numbers, which is the case
             // LiteHtmlView.SetText exists for. Watch the CPU stat drop when this
             // path takes over.
-            if (_page == Page.Overview && _statsBound && Transition() >= 1f)
+            if (_statsBound && Transition() >= 1f)
             {
-                RefreshOverviewStats();
-                return;
+                if (_page == Page.Overview)
+                {
+                    RefreshOverviewStats();
+                    return;
+                }
+
+                if (_page == Page.Animation && _animate)
+                {
+                    RefreshAnimation(Time.unscaledTime);
+                    return;
+                }
             }
 
             _view.LoadHtml(BuildDocument());
-            _statsBound = _page == Page.Overview;
+            _statsBound = _page == Page.Overview || _page == Page.Animation;
         }
 
         /// <summary>Eased 0..1 progress of the page-enter transition.</summary>
@@ -424,55 +433,93 @@ namespace LiteHtmlUnity.Samples
             _sb.Append("<h2>litehtml'de CSS animasyonu yok. Degerler C#'ta hesaplanip ")
                .Append("inline style olarak yaziliyor.</h2>");
 
-            // Conic gradient spun by angle -- exercises the conic path, which
-            // nothing else in the demo touches.
-            float spin = clock * 90f % 360f;
-            _sb.Append("<div style=\"display:inline-block;width:84px;height:84px;border-radius:42px;")
-               .Append("margin-right:18px;background:conic-gradient(from ").Append(F(spin))
-               .Append("deg,#22d3ee,#3b82f6,#a855f7,#22d3ee)\"></div>");
+            // Every animated element carries an id and gets its style from the
+            // helpers below, so RefreshAnimation can rewrite exactly the same
+            // declarations in place without the two ever drifting apart.
+            _sb.Append("<div id=\"a-conic\" style=\"").Append(ConicStyle(clock)).Append("\"></div>");
+            _sb.Append("<div id=\"a-radial\" style=\"").Append(RadialStyle(clock)).Append("\"></div>");
 
-            // Radial gradient whose radius breathes.
-            float breathe = 30f + Mathf.Sin(clock * 2.1f) * 14f;
-            _sb.Append("<div style=\"display:inline-block;width:84px;height:84px;border-radius:16px;")
-               .Append("margin-right:18px;background:radial-gradient(circle ").Append(F(breathe))
-               .Append("px at 50% 50%,#f472b6,#1e1b4b)\"></div>");
-
-            // Size + colour pulse on a rounded square.
-            float pulse = (Mathf.Sin(clock * 3f) + 1f) * 0.5f;
-            float size = 44f + pulse * 34f;
             _sb.Append("<div style=\"display:inline-block;vertical-align:top;width:84px;height:84px\">")
-               .Append("<div style=\"width:").Append(F(size)).Append("px;height:").Append(F(size))
-               .Append("px;margin:").Append(F((84f - size) * 0.5f)).Append("px;border-radius:")
-               .Append(F(8f + pulse * 34f)).Append("px;background:")
-               .Append(Rgba(34, 211, 238, 0.35f + pulse * 0.65f)).Append("\"></div></div>");
+               .Append("<div id=\"a-pulse\" style=\"").Append(PulseStyle(clock)).Append("\"></div></div>");
 
             // A travelling sine wave of bars: many small boxes, each with its
             // own animated height, which stresses layout rather than fill rate.
             _sb.Append("<div style=\"margin-top:16px;height:60px\">");
-            for (int i = 0; i < 28; i++)
+            for (int i = 0; i < BarCount; i++)
             {
-                float phase = clock * 3.2f - i * 0.32f;
-                float h = 10f + (Mathf.Sin(phase) + 1f) * 0.5f * 46f;
-
-                _sb.Append("<div style=\"display:inline-block;vertical-align:bottom;width:10px;margin-right:3px;")
-                   .Append("border-radius:3px;height:").Append(F(h)).Append("px;background:")
-                   .Append(Rgba(56, 189, 248, 0.35f + h / 90f)).Append("\"></div>");
+                _sb.Append("<div id=\"a-bar").Append(i).Append("\" style=\"").Append(BarStyle(clock, i))
+                   .Append("\"></div>");
             }
             _sb.Append("</div>");
 
             // Bar that slides back and forth using margin, not transform.
-            float slide = (Mathf.Sin(clock * 1.4f) + 1f) * 0.5f;
-            _sb.Append("<div class=\"bar\" style=\"margin-top:14px\"><i style=\"margin-left:")
-               .Append(F(slide * 62f)).Append("%;width:38%\"></i></div>");
+            _sb.Append("<div class=\"bar\" style=\"margin-top:14px\"><i id=\"a-slide\" style=\"")
+               .Append(SlideStyle(clock)).Append("\"></i></div>");
 
-            _sb.Append("<p class=\"muted\" style=\"margin:14px 0 0 0\">Her kare: ")
-               .Append(F(_view.ParseMs, "0.00")).Append(" ms parse + ")
-               .Append(F(_view.LayoutMs, "0.00")).Append(" ms layout + ")
-               .Append(F(_view.DrawMs, "0.00")).Append(" ms cizim &nbsp;|&nbsp; ")
-               .Append(_view.QuadCount).Append(" quad</p>");
+            _sb.Append("<p id=\"a-stats\" class=\"muted\" style=\"margin:14px 0 0 0\">")
+               .Append(AnimationStats()).Append("</p>");
 
             _sb.Append("</div>");
             AppendAnimationToggle();
+        }
+
+        const int BarCount = 28;
+
+        private string AnimationStats() =>
+            "Her kare: " + F(_view.ParseMs, "0.00") + " ms parse + " +
+            F(_view.LayoutMs, "0.00") + " ms layout + " +
+            F(_view.DrawMs, "0.00") + " ms cizim  |  " + _view.QuadCount + " quad";
+
+        // Exercises the conic path, which nothing else in the demo touches.
+        private static string ConicStyle(float clock) =>
+            "display:inline-block;width:84px;height:84px;border-radius:42px;margin-right:18px;" +
+            "background:conic-gradient(from " + F(clock * 90f % 360f) +
+            "deg,#22d3ee,#3b82f6,#a855f7,#22d3ee)";
+
+        private static string RadialStyle(float clock) =>
+            "display:inline-block;width:84px;height:84px;border-radius:16px;margin-right:18px;" +
+            "background:radial-gradient(circle " + F(30f + Mathf.Sin(clock * 2.1f) * 14f) +
+            "px at 50% 50%,#f472b6,#1e1b4b)";
+
+        private static string PulseStyle(float clock)
+        {
+            float pulse = (Mathf.Sin(clock * 3f) + 1f) * 0.5f;
+            float size = 44f + pulse * 34f;
+            return "width:" + F(size) + "px;height:" + F(size) +
+                   "px;margin:" + F((84f - size) * 0.5f) + "px;border-radius:" +
+                   F(8f + pulse * 34f) + "px;background:" + Rgba(34, 211, 238, 0.35f + pulse * 0.65f);
+        }
+
+        private static string BarStyle(float clock, int i)
+        {
+            float h = 10f + (Mathf.Sin(clock * 3.2f - i * 0.32f) + 1f) * 0.5f * 46f;
+            return "display:inline-block;vertical-align:bottom;width:10px;margin-right:3px;" +
+                   "border-radius:3px;height:" + F(h) + "px;background:" + Rgba(56, 189, 248, 0.35f + h / 90f);
+        }
+
+        private static string SlideStyle(float clock) =>
+            "margin-left:" + F((Mathf.Sin(clock * 1.4f) + 1f) * 0.5f * 62f) + "%;width:38%";
+
+        /// <summary>
+        /// Rewrites the animated declarations in place. This is the case
+        /// LiteHtmlView.SetStyle exists for: the page changes no text, so
+        /// SetText cannot help it, and rebuilding the markup re-parses
+        /// everything to move a few numbers.
+        /// </summary>
+        private void RefreshAnimation(float clock)
+        {
+            _view.SetStyle("#a-conic", ConicStyle(clock));
+            _view.SetStyle("#a-radial", RadialStyle(clock));
+            _view.SetStyle("#a-pulse", PulseStyle(clock));
+            _view.SetStyle("#a-slide", SlideStyle(clock));
+
+            for (int i = 0; i < BarCount; i++)
+            {
+                _view.SetStyle("#a-bar" + i, BarStyle(clock, i));
+            }
+
+            // The read-out is text, so it takes the cheaper path.
+            _view.SetText("#a-stats", AnimationStats());
         }
 
         private void AppendAnimationToggle()
