@@ -1,0 +1,281 @@
+diff -ru --exclude=build pristine/src/lhu_api.cpp exp-c-mastercss/src/lhu_api.cpp
+--- pristine/src/lhu_api.cpp	2026-08-13 17:32:36
++++ exp-c-mastercss/src/lhu_api.cpp	2026-08-13 17:59:58
+@@ -22,6 +22,18 @@
+     std::string last_error;
+     int32_t     master_css_mode = LHU_MASTER_CSS_GAME_UI;
+ 
++    // The master stylesheet, parsed once and shared by every document this context
++    // creates. litehtml normally re-parses it per document, and for the pages a game
++    // UI builds that single step is most of the parse cost. Owned here (not in a
++    // global) so its lifetime is the context's, it is never touched from another
++    // context, and switching master_css_mode simply drops it.
++    //
++    // `cached_mode` is the mode `cached` was built for; -1 means "not built yet".
++    // A null `cached` with a matching `cached_mode` means the sheet was inspected and
++    // found NOT safe to share, so we fall back to per-document parsing.
++    std::shared_ptr<litehtml::css> master_css_cached;
++    int32_t                        master_css_cached_mode = -1;
++
+     explicit LhuContext(const LhuHostCallbacks& host) :
+         container(fonts, host)
+     {
+@@ -33,6 +45,89 @@
+ // litehtml's hit-test entry points want a redraw-box sink; we repaint the whole
+ // view every frame, so we only care whether anything changed at all.
+ const std::function<void(const litehtml::position&)> kIgnoreRedraw = [](const litehtml::position&) {};
++
++// --- shared master stylesheet ------------------------------------------------
++//
++// A parsed litehtml stylesheet is normally tied to the document it was parsed
++// against. These two checks decide whether a particular parsed sheet actually is,
++// so that we only ever share one that is not. See document.h (LHU PATCH) for the
++// full reasoning; in short a selector is document-dependent if it either
++//
++//   * carries a media query — media_query_list_list::m_is_used is mutable state
++//     that document::update_media_lists() flips per document, and the list has to
++//     be registered in document::m_media_lists to be evaluated at all; or
++//   * contains a `.class` or `#id` simple selector — litehtml lowercases those
++//     names at parse time in quirks mode, so the parsed form differs between a
++//     quirks and a no-quirks document.
++//
++// Neither master stylesheet we ship contains any of that, but the check is cheap
++// and runs once, and it is what keeps this safe if either sheet ever grows an
++// @media block or a class selector.
++
++bool selector_is_document_independent(const litehtml::css_selector& sel);
++
++bool compound_is_document_independent(const litehtml::css_element_selector& compound)
++{
++    for(const auto& attr : compound.m_attrs)
++    {
++        if(attr.type == litehtml::select_class || attr.type == litehtml::select_id)
++        {
++            return false;
++        }
++        // :not(...) / :nth-child(... of ...) nest a whole selector list
++        for(const auto& nested : attr.selector_list)
++        {
++            if(!nested || !selector_is_document_independent(*nested))
++            {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++bool selector_is_document_independent(const litehtml::css_selector& sel)
++{
++    if(sel.m_media_query)
++    {
++        return false;
++    }
++    if(!compound_is_document_independent(sel.m_right))
++    {
++        return false;
++    }
++    return !sel.m_left || selector_is_document_independent(*sel.m_left);
++}
++
++// Parses `text` once and returns it if the result is safe to share, else nullptr.
++//
++// css::parse_css_stylesheet() needs a document, but only for document::mode() (fed
++// to parse_selector_list) and document::container() (fed to style::add, which uses
++// it solely for document_container::resolve_color on non-standard colour names).
++// A scratch document supplies both and is thrown away; it accumulates nothing else
++// as long as the sheet has no @media/@import, which the check above enforces.
++std::shared_ptr<litehtml::css> parse_shared_master_css(const char*                   text,
++                                                       litehtml::document_container* container)
++{
++    if(!text || !*text)
++    {
++        return nullptr;
++    }
++
++    auto sheet   = std::make_shared<litehtml::css>();
++    auto scratch = std::make_shared<litehtml::document>(container);
++    sheet->parse_css_stylesheet(std::string(text), "", scratch);
++    sheet->sort_selectors();
++
++    for(const auto& sel : sheet->selectors())
++    {
++        if(!sel || !selector_is_document_independent(*sel))
++        {
++            return nullptr;
++        }
++    }
++    return sheet;
++}
+ } // namespace
+ 
+ extern "C" {
+@@ -91,9 +186,13 @@
+ 
+ void lhu_set_master_css(LhuContext* ctx, int32_t mode)
+ {
+-    if(ctx)
++    if(ctx && ctx->master_css_mode != mode)
+     {
+         ctx->master_css_mode = mode;
++        // Drop the parsed sheet: it belongs to the mode we just left. Documents
++        // already built keep theirs alive through their own shared_ptr.
++        ctx->master_css_cached.reset();
++        ctx->master_css_cached_mode = -1;
+     }
+ }
+ 
+@@ -133,8 +232,19 @@
+         const char* master = ctx->master_css_mode == LHU_MASTER_CSS_FULL ? litehtml::master_css
+                                                                         : lhu::trimmed_master_css();
+ 
+-        ctx->doc = litehtml::document::createFromString(source, &ctx->container, master,
+-                                                        user_css ? std::string(user_css) : std::string());
++        if(ctx->master_css_cached_mode != ctx->master_css_mode)
++        {
++            ctx->master_css_cached      = parse_shared_master_css(master, &ctx->container);
++            ctx->master_css_cached_mode = ctx->master_css_mode;
++        }
++
++        // With a shared sheet there is nothing left to parse, so do not hand
++        // createFromString the ~4 KB master string only for it to be copied and ignored.
++        const std::string master_styles = ctx->master_css_cached ? std::string() : std::string(master);
++
++        ctx->doc = litehtml::document::createFromString(source, &ctx->container, master_styles,
++                                                        user_css ? std::string(user_css) : std::string(),
++                                                        ctx->master_css_cached);
+     }
+     catch(const std::exception& e)
+     {
+diff -ru --exclude=build pristine/third_party/litehtml/include/litehtml/document.h exp-c-mastercss/third_party/litehtml/include/litehtml/document.h
+--- pristine/third_party/litehtml/include/litehtml/document.h	2026-08-13 15:49:48
++++ exp-c-mastercss/third_party/litehtml/include/litehtml/document.h	2026-08-13 17:56:01
+@@ -60,7 +60,9 @@
+         css_text::vector                        m_css;
+         litehtml::css                           m_styles;
+         litehtml::web_color                     m_def_color;
+-        litehtml::css                           m_master_css;
++        // LHU PATCH: was `litehtml::css m_master_css;`. Held by shared_ptr so that a master
++        // stylesheet parsed once can be shared by every document (see createFromString below).
++        std::shared_ptr<litehtml::css>          m_master_css;
+         litehtml::css                           m_user_css;
+         litehtml::size                          m_size;
+         position::vector                        m_fixed_boxes;
+@@ -130,9 +132,27 @@
+         void dump(dumper& cout);
+ 
+         // see doc/document_createFromString.txt
++        //
++        // LHU PATCH: optional `shared_master_css`. litehtml re-parses the master stylesheet from
++        // scratch for every document, which dominates document creation for small pages. When a
++        // pre-parsed (and already sorted) stylesheet is passed here it is used as-is and
++        // `master_styles` is ignored.
++        //
++        // The caller owns the cache and is responsible for its validity. During parsing, a
++        // stylesheet depends on the owning document in exactly two ways:
++        //   * parse_selector_list() takes document::mode(), which only lowercases `.class` and
++        //     `#id` selector names in quirks mode (litehtml/src/css_selector.cpp);
++        //   * style::add() takes document::container(), which is only consulted by
++        //     document_container::resolve_color() for non-standard colour names.
++        // In addition, an @media/@import block would attach a media_query_list_list to the
++        // selectors; that object carries per-document mutable state (m_is_used, toggled by
++        // document::update_media_lists) and is registered in document::m_media_lists, so such a
++        // stylesheet must NOT be shared. Everything else in the parsed result (selectors,
++        // specificity, order and the style blocks) is only read by apply_stylesheet().
+         static document::ptr createFromString(const estring& str, document_container* container,
+                                               const std::string& master_styles = litehtml::master_css,
+-                                              const std::string& user_styles   = {});
++                                              const std::string& user_styles   = {},
++                                              const std::shared_ptr<litehtml::css>& shared_master_css = nullptr);
+ 
+         // The mode must be set before any element is created, because it is used in html_tag::set_attr.
+         void set_document_mode(document_mode mode);
+@@ -140,9 +160,11 @@
+         // element::appendChild() instead of being parsed from an HTML string. Runs the same
+         // finalization sequence createFromString() runs after parsing. A document is finalized
+         // once, when its tree is complete; any further call does nothing.
++        // LHU PATCH: `shared_master_css` as in createFromString above.
+         void finalize_from_external_root(const std::shared_ptr<element>& root,
+                                          const std::string&              master_styles = litehtml::master_css,
+-                                         const std::string&              user_styles   = {});
++                                         const std::string&              user_styles   = {},
++                                         const std::shared_ptr<litehtml::css>& shared_master_css = nullptr);
+ 
+       private:
+         uint_ptr add_font(const font_description& descr, font_metrics* fm);
+diff -ru --exclude=build pristine/third_party/litehtml/src/document.cpp exp-c-mastercss/third_party/litehtml/src/document.cpp
+--- pristine/third_party/litehtml/src/document.cpp	2026-08-13 15:49:48
++++ exp-c-mastercss/third_party/litehtml/src/document.cpp	2026-08-13 17:56:14
+@@ -49,7 +49,8 @@
+     }
+ 
+     document::ptr document::createFromString(const estring& str, document_container* container,
+-                                             const std::string& master_styles, const std::string& user_styles)
++                                             const std::string& master_styles, const std::string& user_styles,
++                                             const std::shared_ptr<litehtml::css>& shared_master_css)
+     {
+         // Create litehtml::document
+         document::ptr doc = std::make_shared<document>(container);
+@@ -83,7 +84,7 @@
+         // Destroy GumboOutput
+         gumbo_destroy_output(&kGumboDefaultOptions, output);
+ 
+-        doc->finalize_from_external_root(root, master_styles, user_styles);
++        doc->finalize_from_external_root(root, master_styles, user_styles, shared_master_css);
+ 
+         return doc;
+     }
+@@ -94,7 +95,8 @@
+     }
+ 
+     void document::finalize_from_external_root(const std::shared_ptr<element>& root, const std::string& master_styles,
+-                                               const std::string& user_styles)
++                                               const std::string&                    user_styles,
++                                               const std::shared_ptr<litehtml::css>& shared_master_css)
+     {
+         // Finalization accumulates state that is never rolled back: the parsed stylesheets, the media
+         // lists, the tabular elements, the render tree, and the used selectors of every element. A
+@@ -108,10 +110,16 @@
+ 
+         m_root = root;
+ 
+-        if(master_styles != "")
++        // LHU PATCH: reuse a master stylesheet the caller parsed once instead of re-parsing it for
++        // every document. See document.h for what makes that safe.
++        if(shared_master_css)
+         {
+-            m_master_css.parse_css_stylesheet(master_styles, "", shared_from_this());
+-            m_master_css.sort_selectors();
++            m_master_css = shared_master_css;
++        } else if(master_styles != "")
++        {
++            m_master_css = std::make_shared<litehtml::css>();
++            m_master_css->parse_css_stylesheet(master_styles, "", shared_from_this());
++            m_master_css->sort_selectors();
+         }
+         if(user_styles != "")
+         {
+@@ -127,7 +135,10 @@
+             m_root->set_pseudo_class(_root_, true);
+ 
+             // apply master CSS
+-            m_root->apply_stylesheet(m_master_css);
++            if(m_master_css)
++            {
++                m_root->apply_stylesheet(*m_master_css);
++            }
+ 
+             // parse elements attributes
+             m_root->parse_attributes();
+@@ -1168,7 +1179,10 @@
+             parent.appendChild(child);
+ 
+             // apply master CSS
+-            child->apply_stylesheet(m_master_css);
++            if(m_master_css)
++            {
++                child->apply_stylesheet(*m_master_css);
++            }
+ 
+             // parse elements attributes
+             child->parse_attributes();

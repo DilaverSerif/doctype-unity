@@ -1,0 +1,21 @@
+{
+    "name": "LiteHtmlUnity.Editor",
+    "rootNamespace": "LiteHtmlUnity.EditorTools",
+    "references": [
+        "LiteHtmlUnity.Runtime",
+        "LiteHtmlUnity.Samples",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

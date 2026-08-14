@@ -1,0 +1,45 @@
+<html><head><style>
+  body { margin:0; background:#12141c; font-family:arial; color:#e6e9f0; }
+  .card { margin:24px; padding:20px 24px; border-radius:14px;
+          background:linear-gradient(135deg,#1e2333,#2a3350);
+          border:1px solid #3d4870; }
+  h1 { font-size:28px; margin:0 0 6px 0; color:#ffffff; }
+  .sub { font-size:14px; color:#8e97b3; margin:0 0 18px 0; }
+  .row { margin-bottom:10px; }
+  .pill { display:inline-block; padding:5px 14px; border-radius:999px;
+          background:#3b82f6; color:#fff; font-size:13px; }
+  .pill.warn { background:#f59e0b; }
+  .pill.bad  { background:#ef4444; }
+  .bar { height:10px; border-radius:5px; background:#232a3d; margin-top:6px; }
+  .bar > i { display:block; height:10px; border-radius:5px;
+             background:linear-gradient(to right,#22d3ee,#3b82f6); }
+  table { width:100%; border-collapse:collapse; margin-top:16px; font-size:13px; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid #2c3450; }
+  th { color:#8e97b3; font-weight:normal; }
+  a { color:#7dd3fc; }
+</style></head><body>
+  <div class="card">
+    <h1>litehtml &rarr; Unity GPU</h1>
+    <p class="sub">CPU'da layout, GPU'da SDF ile cizim. Tek mesh, tek draw call.</p>
+
+    <div class="row">
+      <span class="pill">layout</span>
+      <span class="pill warn">gradient</span>
+      <span class="pill bad">border</span>
+    </div>
+
+    <div class="bar"><i style="width:72%"></i></div>
+
+    <table>
+      <tr><th>Ozellik</th><th>Durum</th></tr>
+      <tr><td>Yuvarlak kose + kenarlik</td><td>SDF</td></tr>
+      <tr><td>Metin</td><td>stb_truetype atlas</td></tr>
+      <tr><td>Gradient</td><td>LUT dokusu</td></tr>
+      <tr><td>Kirpma</td><td>Yuvarlak dikdortgen</td></tr>
+    </table>
+
+    <p class="sub" style="margin-top:16px;margin-bottom:0">
+      <a href="https://github.com/litehtml/litehtml">litehtml</a> BSD-3-Clause
+    </p>
+  </div>
+</body></html>

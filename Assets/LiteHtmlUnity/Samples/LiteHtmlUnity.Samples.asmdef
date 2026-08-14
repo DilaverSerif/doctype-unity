@@ -1,0 +1,17 @@
+{
+    "name": "LiteHtmlUnity.Samples",
+    "rootNamespace": "LiteHtmlUnity.Samples",
+    "references": [
+        "LiteHtmlUnity.Runtime",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

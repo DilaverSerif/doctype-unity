@@ -1,0 +1,274 @@
+diff -ru --exclude=build pristine/src/lhu_api.cpp exp-a-clip/src/lhu_api.cpp
+--- pristine/src/lhu_api.cpp	2026-08-13 17:32:36
++++ exp-a-clip/src/lhu_api.cpp	2026-08-13 17:58:20
+@@ -19,6 +19,14 @@
+ 
+     float       doc_width  = 0.f;
+     float       doc_height = 0.f;
++
++    // Document-space rectangle lhu_record() restricts drawing to. A
++    // non-positive width or height means "no clip: record the whole document",
++    // which is the default.
++    float       clip_x = 0.f;
++    float       clip_y = 0.f;
++    float       clip_w = 0.f;
++    float       clip_h = 0.f;
+     std::string last_error;
+     int32_t     master_css_mode = LHU_MASTER_CSS_GAME_UI;
+ 
+@@ -166,6 +174,19 @@
+     return ctx->doc_height;
+ }
+ 
++void lhu_set_record_clip(LhuContext* ctx, float x, float y, float w, float h)
++{
++    if(!ctx)
++    {
++        return;
++    }
++
++    ctx->clip_x = x;
++    ctx->clip_y = y;
++    ctx->clip_w = w;
++    ctx->clip_h = h;
++}
++
+ void lhu_record(LhuContext* ctx, LhuFrame* out)
+ {
+     if(!out)
+@@ -190,8 +211,16 @@
+ 
+             ctx->container.begin_record();
+ 
+-            litehtml::position clip(litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), litehtml::pixel_t(ctx->doc_width),
+-                                    litehtml::pixel_t(ctx->doc_height));
++            const bool  clipped = ctx->clip_w > 0.f && ctx->clip_h > 0.f;
++            const float cx      = clipped ? ctx->clip_x : 0.f;
++            const float cy      = clipped ? ctx->clip_y : 0.f;
++            const float cw      = clipped ? ctx->clip_w : ctx->doc_width;
++            const float ch      = clipped ? ctx->clip_h : ctx->doc_height;
++
++            // Braces, not parentheses: `position clip(pixel_t(cx), ...)` would be
++            // parsed as a function declaration.
++            litehtml::position clip { static_cast<litehtml::pixel_t>(cx), static_cast<litehtml::pixel_t>(cy),
++                                      static_cast<litehtml::pixel_t>(cw), static_cast<litehtml::pixel_t>(ch) };
+             ctx->doc->draw(0, litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), &clip);
+ 
+             ctx->container.end_record();
+diff -ru --exclude=build pristine/src/lhu_api.h exp-a-clip/src/lhu_api.h
+--- pristine/src/lhu_api.h	2026-08-13 17:32:36
++++ exp-a-clip/src/lhu_api.h	2026-08-13 18:00:21
+@@ -63,6 +63,32 @@
+ // Runs layout at the given available width. Returns the document height.
+ LHU_API float lhu_layout(LhuContext* ctx, float max_width);
+ 
++// Restricts what lhu_record() walks to a document-space rectangle, so content
++// scrolled out of view costs nothing. litehtml already tests every element box
++// against the clip it is handed, so this is a real tree-level cull, not a
++// post-filter on the emitted quads.
++//
++// `x`/`y` are document-space (i.e. for a view scrolled down by S, pass y = S).
++// Pass w <= 0 or h <= 0 to go back to recording the whole document, which is
++// also the default for a fresh context.
++//
++// Culling is per element and tests the element's own border box, so anything
++// that paints outside that box can be dropped near the clip edge. Two cases are
++// known and both only bite once `y` is non-zero, i.e. once you scroll:
++//
++//   * position:fixed content. This engine has no scroll offset — the viewport
++//     litehtml sees is always anchored at the document origin (Container::
++//     get_viewport), so a fixed element lives at document y in [0, viewport_h]
++//     and a scrolled clip culls it. Measured: a fixed bar disappears at y=800.
++//   * the canvas backdrop (the root/body background). litehtml hands the root
++//     background the clip rect, and Container::paint_box then pins it to the
++//     document origin and grows it to at least the viewport, so a scrolled clip
++//     still paints it at (0,0) and the scrolled region has no page background.
++//
++// Recording the whole document (the default) and recording the top of it
++// (y == 0) are both unaffected.
++LHU_API void lhu_set_record_clip(LhuContext* ctx, float x, float y, float w, float h);
++
+ // Walks the laid-out tree and fills `out` with this frame's quads plus the
+ // current atlas state. Pointers in `out` stay valid until the next call.
+ LHU_API void lhu_record(LhuContext* ctx, LhuFrame* out);
+diff -ru --exclude=build pristine/tests/bench.cpp exp-a-clip/tests/bench.cpp
+--- pristine/tests/bench.cpp	2026-08-13 17:41:53
++++ exp-a-clip/tests/bench.cpp	2026-08-13 17:58:38
+@@ -166,6 +166,87 @@
+     return s;
+ }
+ 
++// Field-wise equality. Deliberately does not memcmp the whole struct: LhuQuad
++// carries an explicit `_pad` word that nothing is required to initialise.
++bool same_quad(const LhuQuad& a, const LhuQuad& b)
++{
++    if(a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h)
++    {
++        return false;
++    }
++    for(int i = 0; i < 4; ++i)
++    {
++        if(a.rx[i] != b.rx[i] || a.ry[i] != b.ry[i] || a.border[i] != b.border[i] || a.clip_r[i] != b.clip_r[i] ||
++           a.params[i] != b.params[i])
++        {
++            return false;
++        }
++    }
++    if(a.clip_x != b.clip_x || a.clip_y != b.clip_y || a.clip_w != b.clip_w || a.clip_h != b.clip_h)
++    {
++        return false;
++    }
++    if(a.u0 != b.u0 || a.v0 != b.v0 || a.u1 != b.u1 || a.v1 != b.v1)
++    {
++        return false;
++    }
++    return a.grad_row == b.grad_row && a.type == b.type && a.color == b.color;
++}
++
++// The one quad that is *allowed* to differ between a clipped and an unclipped
++// recording: the canvas backdrop.
++//
++// litehtml hands the root element's background the clip rect it was given
++// (html_tag.cpp:986, `if(is_root() && clip) layer.border_box = *clip`), and
++// lhu_container's paint_box() then grows that box to at least the viewport
++// (lhu_container.cpp:521). So the backdrop is max(clip, viewport) either way —
++// which is what a browser does: the canvas background always fills the view.
++// Everything else must survive culling byte-for-byte.
++bool is_canvas_backdrop_pair(const LhuQuad& sub, const LhuQuad& full)
++{
++    return sub.type == LHU_QUAD_RECT && full.type == LHU_QUAD_RECT && sub.color == full.color && sub.x == 0.f &&
++           full.x == 0.f && sub.y == 0.f && full.y == 0.f && sub.w == full.w;
++}
++
++// Is `sub` an in-order subsequence of `full`? Culling may only *remove* quads;
++// it must never reorder, alter or invent one. Returns -1 when it is a clean
++// subsequence, otherwise the index of the first quad in `sub` that has no
++// match. The leading canvas backdrop is exempt (see above); when it was matched
++// that way its two heights are written to `backdrop_h`.
++int first_unmatched(const std::vector<LhuQuad>& sub, const std::vector<LhuQuad>& full, float backdrop_h[2])
++{
++    backdrop_h[0] = backdrop_h[1] = 0.f;
++
++    size_t j = 0;
++    for(size_t i = 0; i < sub.size(); ++i)
++    {
++        if(i == 0 && !full.empty() && !same_quad(sub[0], full[0]) && is_canvas_backdrop_pair(sub[0], full[0]))
++        {
++            backdrop_h[0] = full[0].h;
++            backdrop_h[1] = sub[0].h;
++            j             = 1;
++            continue;
++        }
++
++        while(j < full.size() && !same_quad(sub[i], full[j]))
++        {
++            ++j;
++        }
++        if(j == full.size())
++        {
++            return static_cast<int>(i);
++        }
++        ++j;
++    }
++
++    return -1;
++}
++
++std::vector<LhuQuad> snapshot(const LhuFrame& frame)
++{
++    return std::vector<LhuQuad>(frame.quads, frame.quads + frame.quad_count);
++}
++
+ void bench_page(LhuContext* ctx, const char* name, const std::string& html, float width, float height,
+                 int iterations)
+ {
+@@ -178,7 +259,8 @@
+     LhuFrame frame {};
+     lhu_record(ctx, &frame);
+ 
+-    const QuadStats stats = analyse(frame);
++    const QuadStats            stats     = analyse(frame);
++    const std::vector<LhuQuad> unclipped = snapshot(frame);
+ 
+     std::vector<double> parse, layout, record, relayout;
+     parse.reserve(iterations);
+@@ -244,6 +326,79 @@
+                 "no-reparse %.1f-%.1f ms\n",
+                 full * 3.0, full * 6.0, rl.mean * 3.0, rl.mean * 6.0);
+ #endif
++
++    // --- same page again, recorded with the clip set to the viewport ---------
++    //
++    // Everything above is the unclipped baseline and is left untouched so the
++    // two runs stay directly comparable. Here we only change what lhu_record()
++    // is allowed to walk.
++    lhu_set_record_clip(ctx, 0.f, 0.f, width, height);
++
++    lhu_load_html(ctx, html.c_str(), nullptr);
++    const double doc_h = lhu_layout(ctx, width);
++
++    LhuFrame clipped_frame {};
++    lhu_record(ctx, &clipped_frame);
++
++    const QuadStats            cstats  = analyse(clipped_frame);
++    const std::vector<LhuQuad> clipped = snapshot(clipped_frame);
++    float                      backdrop_h[2] = { 0.f, 0.f };
++    const int                  bad           = first_unmatched(clipped, unclipped, backdrop_h);
++
++    std::vector<double> crecord, crelayout;
++    crecord.reserve(iterations);
++    crelayout.reserve(iterations);
++
++    for(int i = 0; i < iterations; ++i)
++    {
++        lhu_load_html(ctx, html.c_str(), nullptr);
++        lhu_layout(ctx, width);
++
++        auto t0 = Clock::now();
++        lhu_record(ctx, &clipped_frame);
++        crecord.push_back(ms_since(t0));
++
++        t0 = Clock::now();
++        lhu_layout(ctx, width);
++        lhu_record(ctx, &clipped_frame);
++        crelayout.push_back(ms_since(t0));
++    }
++
++    lhu_set_record_clip(ctx, 0.f, 0.f, 0.f, 0.f); // back to the default
++
++    const Stats cr  = Stats::from(crecord);
++    const Stats crl = Stats::from(crelayout);
++
++    const double cull = stats.total ? (1.0 - static_cast<double>(cstats.total) / stats.total) * 100.0 : 0.0;
++    const bool   fits = doc_h <= static_cast<double>(height);
++
++    std::printf("  --- viewport clip (0,0,%.0fx%.0f), document is %.0f px tall%s ---\n", width, height, doc_h,
++                fits ? " — fits, nothing should be culled" : "");
++    std::printf("  %-22s %8d   (%d glyph)  vs %d unclipped  -> %.1f%% culled\n", "quads clipped", cstats.total,
++                cstats.glyphs, stats.total, cull);
++    std::printf("  %-22s %8.3f %8.3f %8.3f %8.3f   (unclipped %.3f)\n", "record clipped", cr.mean, cr.p50, cr.p95,
++                cr.max, r.mean);
++    std::printf("  %-22s %8.3f %8.3f %8.3f %8.3f   (unclipped %.3f)\n", "layout+record clipped", crl.mean, crl.p50,
++                crl.p95, crl.max, rl.mean);
++    const char* verdict = "FAILED";
++    if(bad < 0)
++    {
++        verdict = cstats.total == stats.total ? "OK — identical quad stream" : "OK — strict subsequence";
++    }
++    std::printf("  subset check: %s\n", verdict);
++    if(backdrop_h[0] != backdrop_h[1])
++    {
++        std::printf("  canvas backdrop rect %.0f px -> %.0f px tall (expected: it follows the clip/viewport)\n",
++                    backdrop_h[0], backdrop_h[1]);
++    }
++    if(bad >= 0)
++    {
++        std::printf("  !! clipped quad %d has no match in the unclipped stream\n", bad);
++    }
++    if(fits && cstats.total != stats.total)
++    {
++        std::printf("  !! page fits the viewport but the quad count changed (%d -> %d)\n", stats.total, cstats.total);
++    }
+ }
+ 
+ } // namespace

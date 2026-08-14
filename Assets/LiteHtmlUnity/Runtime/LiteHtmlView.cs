@@ -1,0 +1,753 @@
+using System;
+using System.Collections.Generic;
+using Unity.Collections;
+using UnityEngine;
+
+namespace LiteHtmlUnity
+{
+    /// <summary>
+    /// Renders an HTML document into a RenderTexture you can use anywhere:
+    /// a RawImage, a world-space quad, a material slot.
+    /// </summary>
+    /// <remarks>
+    /// Layout runs on the CPU in litehtml; everything visible is drawn by the
+    /// GPU from an analytic quad stream. Nothing is rasterized per-pixel on the
+    /// CPU except glyph coverage, which is cached in an atlas.
+    /// </remarks>
+    [ExecuteAlways]
+    [AddComponentMenu("LiteHtml/LiteHtml View")]
+    public class LiteHtmlView : MonoBehaviour
+    {
+        [Header("Content")]
+        [Tooltip("Takes precedence over the inline HTML below when assigned.")]
+        [SerializeField] private TextAsset _htmlAsset;
+
+        [TextArea(4, 20)]
+        [SerializeField] private string _html =
+            "<body style='font-family:sans-serif;padding:16px'><h1>LiteHtml</h1><p>Hello from Unity.</p></body>";
+
+        [TextArea(2, 10)]
+        [SerializeField] private string _userCss = "";
+
+        [Header("Surface")]
+        [SerializeField] private Vector2Int _size = new Vector2Int(800, 600);
+
+        [Tooltip("Grow the texture vertically to fit the laid-out document.")]
+        [SerializeField] private bool _autoHeight;
+
+        [SerializeField] private Color _background = new Color(1f, 1f, 1f, 0f);
+
+        [Tooltip("Multiplies CSS pixels, like a browser's devicePixelRatio.")]
+        [SerializeField, Range(0.5f, 4f)] private float _deviceScale = 1f;
+
+        [Header("Fonts")]
+        [Tooltip("Fall back to fonts installed on the platform when the list below is empty.")]
+        [SerializeField] private bool _useSystemFonts = true;
+
+        [SerializeField] private List<LiteHtmlFontEntry> _fonts = new List<LiteHtmlFontEntry>();
+
+        [SerializeField] private string _defaultFontFamily = "sans-serif";
+        [SerializeField] private float _defaultFontSize = 16f;
+
+        [Header("Performance")]
+        [Tooltip("litehtml re-parses its default stylesheet for every document, and that is the single " +
+                 "biggest cost of a rebuild. The trimmed sheet drops form controls and legacy tags.")]
+        [SerializeField] private LiteHtmlMasterStylesheet _masterStylesheet = LiteHtmlMasterStylesheet.GameUI;
+
+        private readonly Dictionary<string, Action<LiteHtmlElementClick>> _pendingBindings =
+            new Dictionary<string, Action<LiteHtmlElementClick>>();
+
+        private LiteHtmlDocument _document;
+        private LiteHtmlRenderer _renderer;
+        private RenderTexture _target;
+
+        // Parsing, laying out and drawing are tracked separately: re-parsing on
+        // every resize would be wasteful and would also drop hover/active state.
+        private bool _needsReload = true;
+        private bool _needsLayout = true;
+        private bool _needsRender = true;
+        private int _resourceVersion = -1;
+        private Vector2Int _laidOutFor;
+        private float _laidOutScale;
+
+        // Pointer state has to be re-applied after a re-parse. litehtml decides
+        // a click happened when press and release land on the *same element
+        // instance*, and re-parsing throws those instances away — so without
+        // this, any click spanning more than one rebuild is silently lost, and
+        // :hover flickers off every frame.
+        private Vector2 _lastPointer;
+        private bool _hasPointer;
+        private bool _pointerDown;
+        private bool _documentWasReparsed;
+
+        // Re-parsing is ~97% of a rebuild's CPU cost, and almost all of that is
+        // litehtml re-parsing its own default stylesheet — a fixed price paid
+        // per document, regardless of how small the page is. A page that
+        // regenerates identical markup (a UI that only changes when something
+        // happens) should never pay it.
+        private string _loadedHtml;
+        private string _loadedCss;
+        private bool _forceReload;
+
+        /// <summary>Reloads skipped because the markup was unchanged.</summary>
+        public int SkippedReloads { get; private set; }
+
+        // Real measurements rather than guesses: animating means re-parsing and
+        // re-laying-out every frame, and you need to know what that costs.
+        // Fully qualified: System.Diagnostics.Debug would otherwise collide
+        // with UnityEngine.Debug.
+        private readonly System.Diagnostics.Stopwatch _stopwatch = new System.Diagnostics.Stopwatch();
+
+        /// <summary>Fires when a link inside the document is clicked.</summary>
+        public event Action<string> AnchorClicked;
+
+        /// <summary>Fires when the CSS cursor under the pointer changes.</summary>
+        public event Action<string> CursorChanged;
+
+        /// <summary>
+        /// Fires when a non-anchor element is clicked, innermost first.
+        /// </summary>
+        /// <remarks>
+        /// Use <see cref="BindClick"/> when you know the element's id; this
+        /// event is for cases where you want to inspect tag, class or
+        /// data-action instead.
+        /// </remarks>
+        public event Action<LiteHtmlElementClick> ElementClicked;
+
+        /// <summary>The rendered surface. Recreated when the size changes.</summary>
+        public RenderTexture Texture => _target;
+
+        public LiteHtmlDocument Document => _document;
+
+        /// <summary>Height of the laid-out document, which can exceed the texture height.</summary>
+        public float DocumentHeight => _document?.DocumentHeight ?? 0f;
+
+        /// <summary>Quads drawn in the last frame — a direct measure of GPU cost.</summary>
+        public int QuadCount => _renderer?.LastQuadCount ?? 0;
+
+        /// <summary>Milliseconds spent parsing the markup in the last reload.</summary>
+        public float ParseMs { get; private set; }
+
+        /// <summary>Milliseconds spent in litehtml's layout pass.</summary>
+        public float LayoutMs { get; private set; }
+
+        /// <summary>Milliseconds spent recording quads and issuing the draw.</summary>
+        public float DrawMs { get; private set; }
+
+        /// <summary>Total CPU cost of the last full rebuild.</summary>
+        public float TotalMs => ParseMs + LayoutMs + DrawMs;
+
+        /// <summary>
+        /// Current glyph atlas dimensions.
+        /// </summary>
+        /// <remarks>
+        /// Worth surfacing: an atlas that keeps growing on a page that is not
+        /// adding new characters means glyphs are being re-packed rather than
+        /// reused, and once it hits its ceiling text stops being drawn at all.
+        /// </remarks>
+        public Vector2Int FontAtlasSize { get; private set; }
+
+        public ILiteHtmlResourceProvider Resources
+        {
+            get => _document?.Resources;
+            set
+            {
+                if (_document != null)
+                {
+                    _document.Resources = value;
+                }
+            }
+        }
+
+        private void OnEnable()
+        {
+            Initialize();
+        }
+
+        private void OnDisable()
+        {
+            Teardown();
+        }
+
+        private void OnValidate()
+        {
+            _size.x = Mathf.Max(1, _size.x);
+            _size.y = Mathf.Max(1, _size.y);
+
+            // Inspector edits can touch the markup itself, so re-parse.
+            _needsReload = true;
+            _forceReload = true;
+        }
+
+        private void Initialize()
+        {
+            Teardown();
+
+            try
+            {
+                _document = new LiteHtmlDocument();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[LiteHtml] native plugin unavailable: {e.Message}", this);
+                return;
+            }
+
+            _document.AnchorClicked += url => AnchorClicked?.Invoke(url);
+            _document.CursorChanged += cursor => CursorChanged?.Invoke(cursor);
+            _document.ElementClicked += click => ElementClicked?.Invoke(click);
+
+            // Bindings registered before the document existed (or before a
+            // re-init) would otherwise be silently dropped.
+            foreach (KeyValuePair<string, Action<LiteHtmlElementClick>> pair in _pendingBindings)
+            {
+                _document.BindClick(pair.Key, pair.Value);
+            }
+
+            _document.SetMasterStylesheet(_masterStylesheet);
+
+            RegisterFonts();
+
+            _renderer = new LiteHtmlRenderer();
+
+            _loadedHtml = null;
+            _loadedCss = null;
+            _needsReload = true;
+            _forceReload = true;
+        }
+
+        private void Teardown()
+        {
+            _renderer?.Dispose();
+            _renderer = null;
+
+            _document?.Dispose();
+            _document = null;
+
+            if (_target != null)
+            {
+                _target.Release();
+                DestroySafely(_target);
+                _target = null;
+            }
+        }
+
+        private static void DestroySafely(UnityEngine.Object obj)
+        {
+            if (obj == null)
+            {
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(obj);
+            }
+            else
+            {
+                DestroyImmediate(obj);
+            }
+        }
+
+        private void RegisterFonts()
+        {
+            int registered = 0;
+
+            foreach (LiteHtmlFontEntry entry in _fonts)
+            {
+                byte[] data = entry?.Resolve();
+                if (data == null)
+                {
+                    continue;
+                }
+
+                if (_document.RegisterFont(entry.Family, data, entry.Weight, entry.Italic))
+                {
+                    registered++;
+                }
+                else
+                {
+                    Debug.LogWarning($"[LiteHtml] could not parse font '{entry.Family}'", this);
+                }
+            }
+
+            if (registered == 0 && _useSystemFonts)
+            {
+                foreach (LiteHtmlFontEntry entry in LiteHtmlSystemFonts.Discover())
+                {
+                    byte[] data = entry.Resolve();
+                    if (data != null && _document.RegisterFont(entry.Family, data, entry.Weight, entry.Italic))
+                    {
+                        registered++;
+                    }
+                }
+            }
+
+            if (registered == 0)
+            {
+                Debug.LogError(
+                    "[LiteHtml] no fonts registered. Assign fonts on the component (as .bytes TextAssets) " +
+                    "or enable Use System Fonts on a platform that has them.", this);
+                return;
+            }
+
+            _document.SetDefaultFont(_defaultFontFamily, _defaultFontSize);
+        }
+
+        /// <summary>
+        /// Runs <paramref name="handler"/> when the element with this id is
+        /// clicked. Survives reloads and component re-initialisation.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// view.BindClick("play", _ => Debug.Log("Play basildi"));
+        /// view.LoadHtml("&lt;button id='play'&gt;Oyna&lt;/button&gt;");
+        /// </code>
+        /// </example>
+        public void BindClick(string elementId, Action<LiteHtmlElementClick> handler)
+        {
+            if (string.IsNullOrEmpty(elementId))
+            {
+                return;
+            }
+
+            if (handler == null)
+            {
+                _pendingBindings.Remove(elementId);
+            }
+            else
+            {
+                _pendingBindings[elementId] = handler;
+            }
+
+            _document?.BindClick(elementId, handler);
+        }
+
+        /// <summary>Removes every id binding.</summary>
+        public void ClearClickBindings()
+        {
+            _pendingBindings.Clear();
+            _document?.ClearClickBindings();
+        }
+
+        /// <summary>Replaces the document content and schedules a relayout.</summary>
+        public void LoadHtml(string html, string userCss = null)
+        {
+            _html = html;
+            _htmlAsset = null;
+
+            if (userCss != null)
+            {
+                _userCss = userCss;
+            }
+
+            _needsReload = true;
+        }
+
+        /// <summary>
+        /// Rewrites the text of one element and schedules the layout that has to
+        /// follow it, without re-parsing the document. Returns false when the
+        /// text was already what you asked for, so the caller can do nothing.
+        /// </summary>
+        /// <remarks>
+        /// This is the path for values that change every frame -- a score, a
+        /// counter, a timer. Rebuilding the markup and calling
+        /// <see cref="LoadHtml"/> instead re-parses the whole page and re-runs
+        /// selector matching, which on a mid-range phone is milliseconds.
+        /// <para>
+        /// Only text is covered: changing a class, an attribute or the set of
+        /// elements still needs a full reload. Returns false, leaving the page
+        /// untouched, when the selector matches nothing or the element holds
+        /// child elements rather than only text.
+        /// </para>
+        /// </remarks>
+        public bool SetText(string selector, string text)
+        {
+            if (_document == null || !_document.SetText(selector, text))
+            {
+                return false;
+            }
+
+            // Nothing was parsed this frame, and the stat pages read this.
+            ParseMs = 0f;
+            _needsLayout = true;
+            return true;
+        }
+
+        /// <summary>
+        /// Re-parses, lays out and draws on the next update, even if the markup
+        /// is unchanged.
+        /// </summary>
+        public void MarkDirty()
+        {
+            _needsReload = true;
+            _forceReload = true;
+        }
+
+        /// <summary>Lays out and draws again without re-parsing, keeping hover state.</summary>
+        public void MarkLayoutDirty()
+        {
+            _needsLayout = true;
+        }
+
+        /// <summary>
+        /// How many surface pixels one CSS pixel covers — a browser's
+        /// devicePixelRatio. Raising it renders the same layout at a higher
+        /// resolution rather than making everything smaller.
+        /// </summary>
+        /// <remarks>
+        /// Pair this with <see cref="SetSize"/>: the CSS viewport the document
+        /// lays out against is the surface size divided by this, so setting the
+        /// surface to the real pixel count and this to the display's scale keeps
+        /// a layout authored in CSS pixels the same physical size on any screen.
+        /// <para>
+        /// Accepts up to 8 rather than the inspector slider's 4, because a
+        /// high-DPI phone against a small reference resolution can legitimately
+        /// land above it.
+        /// </para>
+        /// </remarks>
+        public float DeviceScale
+        {
+            get => _deviceScale;
+            set
+            {
+                float wanted = Mathf.Clamp(value, 0.5f, 8f);
+                if (!Mathf.Approximately(wanted, _deviceScale))
+                {
+                    _deviceScale = wanted;
+                    _needsLayout = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resizes the surface. Layout re-runs, but the parsed document (and
+        /// with it hover and active state) is kept.
+        /// </summary>
+        public void SetSize(int width, int height)
+        {
+            var wanted = new Vector2Int(Mathf.Max(1, width), Mathf.Max(1, height));
+            if (wanted == _size)
+            {
+                return;
+            }
+
+            _size = wanted;
+            _needsLayout = true;
+        }
+
+        private void LateUpdate()
+        {
+            // Newly-arrived images change layout, so watch the provider too.
+            int providerVersion = _document?.Resources?.Version ?? 0;
+            if (providerVersion != _resourceVersion)
+            {
+                // An image finished loading, so its box has a real size now.
+                _resourceVersion = providerVersion;
+                _needsLayout = true;
+
+                // ...and its UVs may have moved, which relayout alone does NOT
+                // cover. Native retains a display list keyed on geometry: if the
+                // provider repacked its atlas without any box changing size, the
+                // relayout below finds nothing dirty and the record replays
+                // cached quads carrying the *old* UVs. A version bump is the
+                // only thing that can tell native its image quads are stale, so
+                // it has to drop the retained frame as well as re-lay-out.
+                //
+                // Deliberately unconditional. Distinguishing "an image loaded"
+                // from "the atlas repacked" would need a second counter on the
+                // provider interface; a version bump is rare (it means content
+                // arrived), and the cost of being wrong is one full redraw.
+                _document?.InvalidateDrawCache();
+            }
+
+            if (_size != _laidOutFor || !Mathf.Approximately(_deviceScale, _laidOutScale))
+            {
+                _needsLayout = true;
+            }
+
+            if (_needsReload)
+            {
+                RunReload();
+            }
+
+            if (_needsLayout)
+            {
+                RunLayout();
+            }
+
+            if (_needsRender)
+            {
+                RunRender();
+            }
+        }
+
+        private void RunReload()
+        {
+            if (_document == null || !_document.IsValid)
+            {
+                return;
+            }
+
+            _needsReload = false;
+
+            string html = CurrentHtml();
+            string css = string.IsNullOrEmpty(_userCss) ? null : _userCss;
+
+            // Identical markup produces an identical document, so skipping the
+            // parse is not just faster — it also keeps hover, active and scroll
+            // state that a fresh parse would throw away.
+            if (!_forceReload && _loadedHtml != null && string.Equals(html, _loadedHtml, StringComparison.Ordinal) &&
+                string.Equals(css, _loadedCss, StringComparison.Ordinal))
+            {
+                SkippedReloads++;
+                ParseMs = 0f;
+                return;
+            }
+
+            _forceReload = false;
+
+            _stopwatch.Restart();
+            bool ok = _document.LoadHtml(html, css);
+            _stopwatch.Stop();
+            ParseMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+
+            if (!ok)
+            {
+                Debug.LogError($"[LiteHtml] {_document.LastError}", this);
+                return;
+            }
+
+            _loadedHtml = html;
+            _loadedCss = css;
+
+            _documentWasReparsed = true;
+            _needsLayout = true;
+        }
+
+        private string CurrentHtml()
+        {
+            return _htmlAsset != null ? _htmlAsset.text : _html;
+        }
+
+        private void RunLayout()
+        {
+            if (_document == null || !_document.IsValid)
+            {
+                return;
+            }
+
+            _needsLayout = false;
+
+            float width = _size.x / _deviceScale;
+            float height = _size.y / _deviceScale;
+
+            _document.SetDeviceScale(_deviceScale);
+            _document.SetViewport(width, height);
+
+            _stopwatch.Restart();
+            float documentHeight = _document.Layout(width);
+            _stopwatch.Stop();
+            LayoutMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+
+            if (_autoHeight)
+            {
+                int wanted = Mathf.Max(1, Mathf.CeilToInt(documentHeight * _deviceScale));
+                if (wanted != _size.y)
+                {
+                    _size.y = wanted;
+                }
+            }
+
+            _laidOutFor = _size;
+            _laidOutScale = _deviceScale;
+
+            if (_documentWasReparsed)
+            {
+                _documentWasReparsed = false;
+                RestorePointerState();
+            }
+
+            _needsRender = true;
+        }
+
+        /// <summary>
+        /// Re-applies the pointer to a freshly parsed document.
+        /// </summary>
+        /// <remarks>
+        /// Hit testing needs a laid-out tree, so this runs after layout. Sending
+        /// the press again matters as much as the move: litehtml only reports a
+        /// click when the release finds the same element still marked active.
+        /// </remarks>
+        private void RestorePointerState()
+        {
+            if (!_hasPointer)
+            {
+                return;
+            }
+
+            _document.MouseMove(_lastPointer);
+
+            if (_pointerDown)
+            {
+                _document.MouseDown(_lastPointer);
+            }
+        }
+
+        private void EnsureTarget()
+        {
+            if (_target != null && _target.width == _size.x && _target.height == _size.y)
+            {
+                return;
+            }
+
+            if (_target != null)
+            {
+                _target.Release();
+                DestroySafely(_target);
+            }
+
+            // sRGB so the GPU converts the shader's linear output back to the
+            // byte values a browser would produce.
+            _target = new RenderTexture(_size.x, _size.y, 0, RenderTextureFormat.ARGB32,
+                                        RenderTextureReadWrite.sRGB)
+            {
+                name = $"LiteHtml {name}",
+                hideFlags = HideFlags.HideAndDontSave,
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+                useMipMap = false,
+                autoGenerateMips = false,
+            };
+
+            _target.Create();
+        }
+
+        private void RunRender()
+        {
+            if (_document == null || !_document.IsValid || _renderer == null)
+            {
+                return;
+            }
+
+            _needsRender = false;
+
+            EnsureTarget();
+
+            _stopwatch.Restart();
+
+            NativeArray<LiteHtmlQuad> quads = _document.Record(out LiteHtmlFrame frame);
+
+            // The document is laid out in CSS pixels and mapped onto the full
+            // target, which is what makes deviceScale behave like a browser's
+            // devicePixelRatio.
+            var documentSize = new Vector2(_size.x / _deviceScale, _size.y / _deviceScale);
+
+            _renderer.Render(quads, frame, _target, _background, documentSize,
+                             _document.Resources?.ImageAtlas);
+
+            FontAtlasSize = new Vector2Int(frame.FontAtlasWidth, frame.FontAtlasHeight);
+
+            _stopwatch.Stop();
+            DrawMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+        }
+
+        // --- input -------------------------------------------------------------
+
+        /// <summary>
+        /// Id of the topmost element at a document point, or null. Changes no
+        /// hover state, so it is safe to call every frame during a drag.
+        /// </summary>
+        public string ElementAt(Vector2 documentPoint)
+        {
+            return _document?.ElementAt(documentPoint);
+        }
+
+        /// <summary>
+        /// Painted rectangle of the first element matching <paramref name="selector"/>,
+        /// in CSS pixels, as of the last layout. Multiply by
+        /// <see cref="DeviceScale"/> for surface pixels.
+        /// </summary>
+        public bool TryGetElementRect(string selector, out Rect rect)
+        {
+            rect = default;
+            return _document != null && _document.TryGetElementRect(selector, out rect);
+        }
+
+        /// <summary>
+        /// Converts a normalized point on the surface (0,0 bottom-left, as Unity
+        /// UI reports it) into document space.
+        /// </summary>
+        public Vector2 NormalizedToDocument(Vector2 normalized)
+        {
+            float width = _size.x / _deviceScale;
+            float height = _size.y / _deviceScale;
+
+            // Document space has y growing downward.
+            return new Vector2(normalized.x * width, (1f - normalized.y) * height);
+        }
+
+        public void PointerMove(Vector2 documentPoint)
+        {
+            _lastPointer = documentPoint;
+            _hasPointer = true;
+
+            if (_document != null && _document.MouseMove(documentPoint))
+            {
+                _needsRender = true;
+            }
+        }
+
+        public void PointerDown(Vector2 documentPoint)
+        {
+            _lastPointer = documentPoint;
+            _hasPointer = true;
+            _pointerDown = true;
+
+            if (_document != null && _document.MouseDown(documentPoint))
+            {
+                _needsRender = true;
+            }
+        }
+
+        public void PointerUp(Vector2 documentPoint)
+        {
+            _lastPointer = documentPoint;
+            _hasPointer = true;
+            _pointerDown = false;
+
+            if (_document != null && _document.MouseUp(documentPoint))
+            {
+                _needsRender = true;
+            }
+        }
+
+        public void PointerExit()
+        {
+            _hasPointer = false;
+            _pointerDown = false;
+
+            if (_document != null && _document.MouseLeave())
+            {
+                _needsRender = true;
+            }
+        }
+
+        /// <returns>True when an element inside the document consumed the scroll.</returns>
+        public bool Scroll(Vector2 delta, Vector2 documentPoint)
+        {
+            if (_document == null)
+            {
+                return false;
+            }
+
+            int consumed = _document.Scroll(delta, documentPoint);
+            if (consumed > 0)
+            {
+                _needsRender = true;
+            }
+
+            return consumed > 0;
+        }
+    }
+}
