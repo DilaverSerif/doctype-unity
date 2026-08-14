@@ -1,9 +1,9 @@
-# litehtml → Unity
+# Doctype
 
-HTML and CSS as a game UI, laid out by [litehtml](https://github.com/litehtml/litehtml)
-and drawn entirely on the GPU. No embedded browser, no CPU rasterizer, no
-per-platform web view — one mesh, one draw call, and it compiles everywhere
-Unity does, iOS and Android included.
+HTML and CSS as a game UI for Unity, laid out by
+[litehtml](https://github.com/litehtml/litehtml) and drawn entirely on the GPU.
+No embedded browser, no CPU rasterizer, no per-platform web view — one mesh, one
+draw call, and it compiles everywhere Unity does, iOS and Android included.
 
 <p align="center">
   <img src="Native/demo.png" width="560" alt="The demo page rendered by the reference rasterizer">
@@ -55,7 +55,7 @@ world-space quad, a material slot on a monitor prop.
 ```
 Unity C# (managed)                     Native plugin (C++)
 
-LiteHtmlView          ── HTML/CSS ──▶  litehtml: parse, cascade, layout
+HtmlView          ── HTML/CSS ──▶  litehtml: parse, cascade, layout
   │                                      │
   │                                      ▼
   │                                    lhu_container: records draw calls
@@ -64,11 +64,11 @@ LiteHtmlView          ── HTML/CSS ──▶  litehtml: parse, cascade, layou
   │                   ◀── quads ─────────┘   (retained; only dirty subtrees
   │                                           are re-recorded)
   ▼
-LiteHtmlMeshBuilder   one quad → 4 vertices, shape params in 8 UV channels
+HtmlMeshBuilder   one quad → 4 vertices, shape params in 8 UV channels
   ▼
-LiteHtmlRenderer      one CommandBuffer, one DrawMesh, into a RenderTexture
+HtmlRenderer      one CommandBuffer, one DrawMesh, into a RenderTexture
   ▼
-LiteHtmlRawImage      composites it on a Canvas, forwards pointer input back
+HtmlRawImage      composites it on a Canvas, forwards pointer input back
 ```
 
 Nothing is rasterized on the CPU except glyph coverage, which is cached in an
@@ -77,18 +77,18 @@ atlas and uploaded once.
 ## Getting started
 
 ```bash
-git clone https://github.com/DilaverSerif/litehtml-unity
-cd litehtml-unity
+git clone https://github.com/DilaverSerif/doctype-unity
+cd doctype-unity
 Native/build_macos.sh          # or build_android.sh / build_ios.sh
 ```
 
 Open the project in Unity 6000.5+ and load
-`Assets/LiteHtmlUnity/Samples/LiteHtmlDemo.unity`.
+`Assets/Doctype/Samples/HtmlDemo.unity`.
 
 In code:
 
 ```csharp
-var view = gameObject.AddComponent<LiteHtmlView>();
+var view = gameObject.AddComponent<HtmlView>();
 view.LoadHtml("<body style='font-family:sans-serif'><h1>Merhaba</h1></body>");
 // view.Texture is a RenderTexture
 
@@ -97,7 +97,7 @@ view.SetStyle("#slot3", "border-color:#3b82f6");      // no re-parse
 string id = view.ElementAt(pointInCssPixels);          // pure query, no hover change
 ```
 
-The package README under [`Assets/LiteHtmlUnity/`](Assets/LiteHtmlUnity/README.md)
+The package README under [`Assets/Doctype/`](Assets/Doctype/README.md)
 covers fonts, resources, HUD layout and the input model in more depth.
 
 ---
@@ -110,8 +110,8 @@ Everything below was measured on a **Xiaomi 22101316I at 1080×2400** — a budg
 Android phone, deliberately — with a spinning-cube load running underneath, 300
 frames per scenario, Vulkan, frame pacing off, GPU times from
 `FrameTimingManager`. The harness is in the repo
-([`LiteHtmlBenchmark.cs`](Assets/LiteHtmlUnity/Samples/LiteHtmlBenchmark.cs));
-build it with `Tools/LiteHtml/Build Benchmark APK` and it writes a CSV to the
+([`HtmlBenchmark.cs`](Assets/Doctype/Samples/HtmlBenchmark.cs));
+build it with `Tools/Doctype/Build Benchmark APK` and it writes a CSV to the
 device.
 
 Each panel is a quarter of the screen holding a scrollable list — 383 quads, the
@@ -157,7 +157,7 @@ antialiasing skirt.
 Two things follow. The 3.6 MB of vertex data a four-panel HUD re-uploads every
 frame is **not** the bottleneck — it costs CPU time (~3 ms of mesh building) and
 nothing measurable on the GPU. And `RenderScale`, which exists on
-`LiteHtmlRawImage`, turns out to be a shipping-grade optimisation and not just a
+`HtmlRawImage`, turns out to be a shipping-grade optimisation and not just a
 measurement knob: half resolution, 3.5× cheaper, softer text.
 
 ### Re-parsing is the expensive thing, so don't
@@ -235,7 +235,7 @@ Native/build/macos/bin/lhu_verify_quadcache   # 693 frame comparisons
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
 
-Play-mode tests (34) live in `Assets/LiteHtmlUnity/Tests/` and run through
+Play-mode tests (34) live in `Assets/Doctype/Tests/` and run through
 Unity's test runner. The native harness rasterizes pages through a reference
 software rasterizer, so the quad stream can be checked against known pixels
 without a GPU in the loop.

@@ -4,8 +4,8 @@
 //   * the native test harness can produce a golden PNG without a GPU, and
 //   * the shader has an executable specification to be checked against.
 //
-// Every function here is written to mirror LiteHtmlQuad.shader one-for-one. If
-// you change the maths in one, change it in the other — LiteHtmlGoldenTests
+// Every function here is written to mirror HtmlQuad.shader one-for-one. If
+// you change the maths in one, change it in the other — HtmlGoldenTests
 // compares their outputs pixel by pixel.
 
 #ifndef LHU_RASTER_H

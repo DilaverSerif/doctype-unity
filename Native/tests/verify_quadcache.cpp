@@ -1049,7 +1049,7 @@ int main()
 
         const long long rebuild_before = lhu_quadcache_stat(p.on, LHU_QC_FRAMES_REBUILD);
 
-        // This is the call LiteHtmlDocument.InvalidateDrawCache() makes.
+        // This is the call HtmlDocument.InvalidateDrawCache() makes.
         lhu_quadcache_stat(p.on, LHU_QC_INVALIDATE);
 
         both_layout(p, w);

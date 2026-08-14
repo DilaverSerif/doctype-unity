@@ -1,14 +1,14 @@
 #!/bin/bash
-# Builds the LiteHtmlUnity native code as a static library for iOS.
+# Builds the Doctype native code as a static library for iOS.
 #
 # iOS plugins must be static: Unity links them into the generated Xcode project
-# and P/Invoke resolves through `__Internal`, which is why LiteHtmlNative.Lib
+# and P/Invoke resolves through `__Internal`, which is why HtmlNative.Lib
 # switches to "__Internal" under UNITY_IOS.
 #
 #   ./build_ios.sh              device (arm64) + simulator (arm64)
 #   ./build_ios.sh device       device only
 #
-# Output: Assets/LiteHtmlUnity/Plugins/iOS/libLiteHtmlUnity.a
+# Output: Assets/Doctype/Plugins/iOS/libDoctype.a
 #
 # Only Xcode is required — no CMake, no NDK. The simulator slice is built too so
 # the library can be smoke-tested without a signing profile, but Unity is given
@@ -20,7 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LITEHTML="$ROOT/third_party/litehtml"
 BUILD="$ROOT/build/ios"
-OUT="$ROOT/../Assets/LiteHtmlUnity/Plugins/iOS"
+OUT="$ROOT/../Assets/Doctype/Plugins/iOS"
 
 TARGETS="${1:-all}"
 
@@ -80,9 +80,9 @@ build_slice() {
     exit 1
   fi
 
-  xcrun --sdk "$sdk" libtool -static -o "$BUILD/libLiteHtmlUnity-$name.a" "$obj"/*.o 2>/dev/null
+  xcrun --sdk "$sdk" libtool -static -o "$BUILD/libDoctype-$name.a" "$obj"/*.o 2>/dev/null
 
-  echo "    $BUILD/libLiteHtmlUnity-$name.a ($(du -h "$BUILD/libLiteHtmlUnity-$name.a" | cut -f1))"
+  echo "    $BUILD/libDoctype-$name.a ($(du -h "$BUILD/libDoctype-$name.a" | cut -f1))"
 }
 
 build_slice device iphoneos "arm64-apple-ios$MIN_IOS"
@@ -92,12 +92,12 @@ if [ "$TARGETS" = "all" ]; then
 fi
 
 mkdir -p "$OUT"
-cp "$BUILD/libLiteHtmlUnity-device.a" "$OUT/libLiteHtmlUnity.a"
+cp "$BUILD/libDoctype-device.a" "$OUT/libDoctype.a"
 
 echo
-echo "==> $OUT/libLiteHtmlUnity.a"
-lipo -info "$OUT/libLiteHtmlUnity.a"
-echo "    exported lhu_ symbols: $(nm -g "$OUT/libLiteHtmlUnity.a" 2>/dev/null | grep -c ' T _lhu_')"
+echo "==> $OUT/libDoctype.a"
+lipo -info "$OUT/libDoctype.a"
+echo "    exported lhu_ symbols: $(nm -g "$OUT/libDoctype.a" 2>/dev/null | grep -c ' T _lhu_')"
 echo
 echo "In Unity, select the .a and set Platform: iOS, then build. C# resolves it"
 echo "through __Internal, so no further wiring is needed."

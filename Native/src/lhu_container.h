@@ -1,4 +1,4 @@
-// LiteHtmlUnity — the document_container implementation.
+// Doctype — the document_container implementation.
 //
 // This class never rasterizes anything (except glyph coverage, which the font
 // atlas handles). Every litehtml draw_* call is translated into one or more

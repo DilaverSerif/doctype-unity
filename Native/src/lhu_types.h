@@ -1,7 +1,7 @@
-// LiteHtmlUnity — shared POD contract between the native plugin and C#.
+// Doctype — shared POD contract between the native plugin and C#.
 //
 // IMPORTANT: every struct here is mirrored 1:1 in
-// Assets/LiteHtmlUnity/Runtime/LiteHtmlTypes.cs. If you change a field here,
+// Assets/Doctype/Runtime/HtmlTypes.cs. If you change a field here,
 // change it there too — the C# side blits these directly out of native memory.
 //
 // All coordinates are in document-space pixels, origin top-left, y down.

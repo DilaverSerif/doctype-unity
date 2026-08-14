@@ -1,0 +1,21 @@
+{
+    "name": "Doctype.Editor",
+    "rootNamespace": "Doctype.EditorTools",
+    "references": [
+        "Doctype.Runtime",
+        "Doctype.Samples",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

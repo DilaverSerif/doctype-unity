@@ -1,4 +1,4 @@
-// LiteHtmlUnity — retained display list for lhu_record(). EXPERIMENT E2.
+// Doctype — retained display list for lhu_record(). EXPERIMENT E2.
 //
 // WHY THIS SHAPE
 //

@@ -58,7 +58,7 @@ mono_crash.*.json
 .Trashes
 
 # --- note --------------------------------------------------------------------
-# The compiled plugins under Assets/LiteHtmlUnity/Plugins/ ARE tracked, even
+# The compiled plugins under Assets/Doctype/Plugins/ ARE tracked, even
 # though Native/build_*.sh regenerates them: Unity loads them from there, so a
 # fresh checkout is otherwise a project that opens with missing native code.
 # They total ~8.6 MB. If native churn makes that history too heavy, ignore them

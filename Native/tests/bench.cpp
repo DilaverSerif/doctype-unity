@@ -1,4 +1,4 @@
-// Performance benchmark for the LiteHtmlUnity native layer.
+// Performance benchmark for the Doctype native layer.
 //
 // Separates the three costs that get lumped together in a frame time — parsing,
 // layout and recording — because they have completely different fixes. Also
@@ -1949,7 +1949,7 @@ int main(int argc, char** argv)
 
     lhu_set_default_font(ctx, "sans-serif", 16.f);
 
-    std::printf("LiteHtmlUnity benchmark — %d iterations per page\n", iterations);
+    std::printf("Doctype benchmark — %d iterations per page\n", iterations);
     std::printf("font: %s\n", regular_path.c_str());
 #ifdef __ANDROID__
     std::printf("running ON DEVICE — these are real measurements, not extrapolations\n");

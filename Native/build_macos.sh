@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the LiteHtmlUnity native plugin as a universal (arm64 + x86_64) macOS
+# Builds the Doctype native plugin as a universal (arm64 + x86_64) macOS
 # bundle and drops it into the Unity project's Plugins folder.
 #
 # Deliberately does not use CMake: litehtml is a flat list of translation units,
@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LITEHTML="$ROOT/third_party/litehtml"
 BUILD="$ROOT/build/macos"
-OUT="$ROOT/../Assets/LiteHtmlUnity/Plugins/macOS/LiteHtmlUnity.bundle"
+OUT="$ROOT/../Assets/Doctype/Plugins/macOS/Doctype.bundle"
 
 MODE="${1:-release}"
 
@@ -132,7 +132,7 @@ mkdir -p "$OUT/Contents/MacOS"
 
 clang++ $CXXFLAGS -bundle \
   "$BUILD"/obj/*.o \
-  -o "$OUT/Contents/MacOS/LiteHtmlUnity"
+  -o "$OUT/Contents/MacOS/Doctype"
 
 cat > "$OUT/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -140,10 +140,10 @@ cat > "$OUT/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleExecutable</key><string>LiteHtmlUnity</string>
-  <key>CFBundleIdentifier</key><string>com.litehtmlunity.native</string>
+  <key>CFBundleExecutable</key><string>Doctype</string>
+  <key>CFBundleIdentifier</key><string>com.dopaminefact.doctype.native</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>LiteHtmlUnity</string>
+  <key>CFBundleName</key><string>Doctype</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -153,8 +153,8 @@ cat > "$OUT/Contents/Info.plist" <<'PLIST'
 PLIST
 
 echo "==> $OUT"
-lipo -info "$OUT/Contents/MacOS/LiteHtmlUnity"
-echo "    exported symbols: $(nm -gU "$OUT/Contents/MacOS/LiteHtmlUnity" | grep -c ' T _lhu_')"
+lipo -info "$OUT/Contents/MacOS/Doctype"
+echo "    exported symbols: $(nm -gU "$OUT/Contents/MacOS/Doctype" | grep -c ' T _lhu_')"
 
 if [ -f "$ROOT/tests/harness.cpp" ]; then
   echo "==> building test harness"

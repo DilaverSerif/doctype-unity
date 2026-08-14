@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds libLiteHtmlUnity.so for Android and installs it into the Unity project.
+# Builds libDoctype.so for Android and installs it into the Unity project.
 #
 # Requirements (none of which this machine currently has — see README):
 #   * Android NDK r23+   set ANDROID_NDK_HOME, or install via Android Studio
@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="$ROOT/../Assets/LiteHtmlUnity/Plugins/Android/libs"
+OUT="$ROOT/../Assets/Doctype/Plugins/Android/libs"
 
 ABIS=("$@")
 if [ ${#ABIS[@]} -eq 0 ]; then
@@ -65,21 +65,21 @@ for ABI in "${ABIS[@]}"; do
   cmake --build "$BUILD" --parallel
 
   mkdir -p "$OUT/$ABI"
-  cp "$BUILD/libLiteHtmlUnity.so" "$OUT/$ABI/"
+  cp "$BUILD/libDoctype.so" "$OUT/$ABI/"
 
   # A Release build still carries its debug symbols, and Unity ships the .so into
   # the APK as-is: 21 MB unstripped against 1.8 MB stripped. The exported lhu_
   # symbols are what P/Invoke resolves and --strip-unneeded keeps all of them, so
   # this costs nothing but the ability to symbolise a native crash from this
-  # exact binary -- keep $BUILD/libLiteHtmlUnity.so for that.
+  # exact binary -- keep $BUILD/libDoctype.so for that.
   STRIP="$TOOLS/llvm-strip"
   if [ -x "$STRIP" ]; then
-    "$STRIP" --strip-unneeded "$OUT/$ABI/libLiteHtmlUnity.so"
+    "$STRIP" --strip-unneeded "$OUT/$ABI/libDoctype.so"
   else
     echo "    warning: llvm-strip not found, shipping unstripped" >&2
   fi
 
-  echo "    $OUT/$ABI/libLiteHtmlUnity.so ($(du -h "$OUT/$ABI/libLiteHtmlUnity.so" | cut -f1))"
+  echo "    $OUT/$ABI/libDoctype.so ($(du -h "$OUT/$ABI/libDoctype.so" | cut -f1))"
 done
 
 echo

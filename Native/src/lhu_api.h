@@ -1,4 +1,4 @@
-// LiteHtmlUnity — flat C ABI consumed by Unity through P/Invoke.
+// Doctype — flat C ABI consumed by Unity through P/Invoke.
 //
 // Threading: a context is NOT thread-safe. Create it, feed it and read from it
 // on one thread (Unity's main thread).

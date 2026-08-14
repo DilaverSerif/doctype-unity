@@ -1,4 +1,4 @@
-// LiteHtmlUnity — font handling and glyph atlas, built on stb_truetype.
+// Doctype — font handling and glyph atlas, built on stb_truetype.
 //
 // Responsibilities:
 //   * map a CSS font-description (family list + size + weight + style) onto a

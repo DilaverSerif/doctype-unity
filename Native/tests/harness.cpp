@@ -1,4 +1,4 @@
-// Standalone test harness for the LiteHtmlUnity native layer.
+// Standalone test harness for the Doctype native layer.
 //
 // Runs without Unity and without a GPU: it drives the same C ABI that C# does,
 // asserts on the recorded quad stream, and rasterizes the result to PNG through
@@ -893,7 +893,7 @@ int main(int argc, char** argv)
     const char* env_root = std::getenv("LHU_ROOT");
     g_root               = env_root ? env_root : ".";
 
-    std::printf("LiteHtmlUnity native harness\n");
+    std::printf("Doctype native harness\n");
     std::printf("root: %s\n", g_root.c_str());
 
     test_abi();
