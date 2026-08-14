@@ -251,8 +251,8 @@ cost from document size.
 
 This project is MIT licensed — see [LICENSE](LICENSE).
 
-It vendors patched copies of third-party code under
-`Native/third_party/`, each under its own licence:
+It vendors patched copies of third-party code under `Native/third_party/`, each
+under its own licence — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md):
 
 | | | |
 |---|---|---|

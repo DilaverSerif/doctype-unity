@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This repository vendors third-party code under Native/third_party/, each under
-its own licence:
-
-  litehtml      BSD-3-Clause   https://github.com/litehtml/litehtml
-  gumbo         Apache-2.0     bundled with litehtml
-  stb_truetype  public domain
-
-Their licence texts travel with their sources.
