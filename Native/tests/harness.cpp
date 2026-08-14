@@ -817,6 +817,69 @@ void test_demo_page()
     }
 }
 
+// A host re-sends the viewport on every layout; only a real change may restyle.
+//
+// Regression: making lhu_set_viewport mark styles stale unconditionally turned
+// every layout into a full restyle plus a render-tree rebuild, which quietly
+// threw away every scroll offset in the document. It reproduces only when a
+// scroll is followed by a layout, which is what a host does on the very next
+// frame -- so the page scrolled and snapped straight back.
+void test_scroll_survives_a_resent_viewport()
+{
+    std::printf("\n[scroll vs viewport]\n");
+
+    std::string rows;
+    for(int i = 0; i < 20; ++i)
+    {
+        rows += "<div id='r" + std::to_string(i) + "' style='height:30px'>row " + std::to_string(i) + "</div>";
+    }
+
+    const std::string html =
+        "<body style='margin:0'><div style='height:150px;overflow:auto'>" + rows + "</div></body>";
+
+    // Loaded first, sized second -- the order a host actually uses, since a
+    // surface only learns its size after the page is already parsed. It matters:
+    // it is the one order in which the first layout sees the viewport change,
+    // and a restyle that rebuilt the render tree there left every scroll_view
+    // reporting nothing to scroll.
+    Fixture fx(false);
+    fx.render(html.c_str(), 300.f, 600.f);
+
+    lhu_set_viewport(fx.ctx, 300.f, 150.f);
+    lhu_layout(fx.ctx, 300.f);
+
+    const auto row_y = [&fx]() {
+        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+        return lhu_element_rect(fx.ctx, "#r5", &x, &y, &w, &h) ? y : -1.f;
+    };
+
+    check_near(row_y(), 150.f, 0.5f, "row 5 starts one viewport down");
+
+    check(lhu_scroll(fx.ctx, 0.f, 40.f, 150.f, 75.f) > 0, "the list took the scroll");
+    check_near(row_y(), 110.f, 0.5f, "and moved up by it");
+
+    // Four frames of exactly what a host does: same viewport, then a layout.
+    for(int frame = 0; frame < 4; ++frame)
+    {
+        lhu_set_viewport(fx.ctx, 300.f, 150.f);
+        lhu_layout(fx.ctx, 300.f);
+    }
+
+    check_near(row_y(), 110.f, 0.5f, "and stayed there across four re-sent viewports");
+
+    // A viewport that really did change still recomputes vw, which is the whole
+    // reason the restyle exists.
+    Fixture vw(false);
+    vw.render("<body style='margin:0'><div id='box' style='width:50vw;height:10px'></div></body>", 800.f, 600.f);
+
+    lhu_set_viewport(vw.ctx, 400.f, 600.f);
+    lhu_layout(vw.ctx, 400.f);
+
+    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    lhu_element_rect(vw.ctx, "#box", &x, &y, &w, &h);
+    check_near(w, 200.f, 0.5f, "50vw follows a viewport that actually changed");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -843,6 +906,7 @@ int main(int argc, char** argv)
     test_radial_conic();
     test_glyph_cache_churn();
     test_kern_cache();
+    test_scroll_survives_a_resent_viewport();
     test_demo_page();
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

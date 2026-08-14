@@ -78,10 +78,21 @@ class Container : public litehtml::document_container
     int                         grad_lut_version() const { return m_grad_version; }
     static constexpr int        kGradLutWidth = 256;
 
-    void set_viewport(float w, float h)
+    /// Returns false when the viewport is already exactly this, so callers can
+    /// skip the invalidation. It matters: the Unity side re-sends the viewport
+    /// on every layout, and treating each of those as a change means a full
+    /// restyle and a render-tree rebuild per layout -- which, among other
+    /// things, throws away every scroll offset in the document.
+    bool set_viewport(float w, float h)
     {
+        if(m_viewport_w == w && m_viewport_h == h)
+        {
+            return false;
+        }
+
         m_viewport_w = w;
         m_viewport_h = h;
+        return true;
     }
 
     void set_device_scale(float s) { m_device_scale = s > 0.f ? s : 1.f; }

@@ -137,6 +137,13 @@ namespace LiteHtmlUnity
             }
         }
 
+        /// <summary>
+        /// One of the retained display list's counters, or -1 when the document
+        /// is gone or the plugin predates them. For instrumentation only.
+        /// </summary>
+        public long QuadCacheStat(LiteHtmlNative.QuadCacheStat which) =>
+            IsValid ? LiteHtmlNative.QuadCacheStatistic(_ctx, which) : -1L;
+
         public float DocumentWidth => IsValid ? LiteHtmlNative.lhu_doc_width(_ctx) : 0f;
 
         public float DocumentHeight => IsValid ? LiteHtmlNative.lhu_doc_height(_ctx) : 0f;

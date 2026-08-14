@@ -102,6 +102,35 @@ RawImage + LiteHtmlRawImage + LiteHtmlView
 `LiteHtmlRawImage` pointer olaylarını belge koordinatlarına çevirip iletir;
 `:hover` CSS'i, `<a>` tıklaması ve scroll çalışır.
 
+#### Birden fazla panel arasında sürükleme
+
+Envanter bir yüzey, hotbar başka bir yüzey olabilir. uGUI bir sürüklemenin
+tamamını **başladığı** nesneye yollar, yani hotbar kendi başına bırakmayı hiç
+duymaz. `LiteHtmlDrag.View` bunu çözer: her probe, parmağın altındaki **tüm
+LiteHtml yüzeylerine** bakar (EventSystem sıralamasıyla, yani canvas sorting
+order ve pass-through filtresi bedava gelir) ve gerçekten üstte olan sayfayı
+bildirir. `ItemDropped` hangi belgede hangi elemana düştüğünü söyler.
+
+Bu, HUD'u tek bir ekran boyu yüzey yerine birkaç küçük panele bölmeyi mümkün
+kılar: her yüzey yalnızca kendi paneli kadar, aradaki boşlukta hiçbir şey yok.
+
+#### Ekranı kaplayan ama doldurmayan HUD'lar
+
+Yüzey ekranı kaplasa bile sayfanın her yerini boyaması gerekmez. `Pass Through
+Empty Areas` açıkken **yalnızca `id`'si olan elemanlar** dokunuşu yakalar; boş
+sayfaya düşen dokunuş arkadaki oyuna geçer. Dekoratif sarmalayıcılara `id`
+vermeyin, tıklanabilir kutulara verin.
+
+Şeffaf sayfa için `Background` **(0,0,0,0)** olmalı — yüzey `Blend One
+OneMinusSrcAlpha` ile birleşiyor, yani renk kendi alfasıyla çarpılmış olmalı.
+Alfası sıfır beyaz (1,1,1,0) geçerli bir premultiplied değer değildir: sayfanın
+boyamadığı her yere beyaz ekler.
+
+vw/vh birimleri viewport değiştiğinde yeniden hesaplanır. Bu önemli, çünkü CSS
+viewport'u her zaman yazdığınız referans genişlik değildir: `DeviceScale` 0.5'te
+taban yaptığı için küçük ekranlar daha keskin değil, **CSS olarak daha geniş**
+bir sayfa alır. px ile ölçülen bir ızgara orada sarar; vw ile ölçülen sarmaz.
+
 ### Fontlar
 
 litehtml font yüklemez; siz vermelisiniz. İki yol:

@@ -14,18 +14,23 @@ using UnityEngine.InputSystem.UI;
 namespace LiteHtmlUnity.EditorTools
 {
     /// <summary>
-    /// Builds the drag-and-drop inventory scene: a full-screen portrait page
-    /// authored against 1080x1920.
+    /// Builds the drag-and-drop inventory scene: two portrait panels, each its
+    /// own surface, drawn over a stand-in game.
     /// </summary>
     /// <remarks>
     /// A separate scene rather than another tab in the main demo, because that
     /// one is authored for a 1280x720 landscape panel and an inventory built for
     /// a portrait phone cannot share it without one of them being wrong.
     ///
-    /// The panel stretches to fill the canvas here, which is what makes the
-    /// layout resolution-independent: LiteHtmlRawImage sizes the surface at the
-    /// canvas scale factor and feeds the same factor to DeviceScale, so one CSS
-    /// pixel is one unit of the 1080x1920 reference on every screen.
+    /// The bag is pinned to the top and the hotbar to the bottom, both stretched
+    /// horizontally and both only as tall as their own page — the sample drives
+    /// the height from each view's laid-out document. Nothing at all covers the
+    /// band between them, which is what makes it empty rather than merely
+    /// transparent: there is no surface there to swallow a touch and no texture
+    /// there to composite.
+    ///
+    /// Dragging an item from one panel to the other therefore crosses a surface
+    /// boundary, which is the point of the sample.
     ///
     /// Headless:
     ///   Unity -batchmode -projectPath . \
@@ -92,30 +97,60 @@ namespace LiteHtmlUnity.EditorTools
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1080f, 1920f);
 
-            // Match width: a taller phone gets more page, a shorter one less,
+            // Match width: a taller phone gets more room between the panels,
             // rather than the columns changing width under the layout.
             scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
             scaler.matchWidthOrHeight = 0f;
 
-            var panelGo = new GameObject("LiteHtmlPanel", typeof(RectTransform), typeof(RawImage));
-            panelGo.transform.SetParent(canvasGo.transform, false);
+            // The heights here are only a first guess. The sample replaces both
+            // with whatever its pages lay out to, on the first frame and after
+            // every reload, so a panel is never taller or shorter than its page.
+            GameObject bag = CreatePanel(canvasGo, "BagPanel", top: true, inset: 56f, guessHeight: 820f);
+            GameObject hotbar = CreatePanel(canvasGo, "HotbarPanel", top: false, inset: 48f, guessHeight: 280f);
 
-            // Stretched, not sized: the page is the screen.
-            var rect = (RectTransform)panelGo.transform;
-            rect.anchorMin = Vector2.zero;
-            rect.anchorMax = Vector2.one;
-            rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
+            var hudGo = new GameObject("InventoryHud", typeof(RectTransform));
+            hudGo.transform.SetParent(canvasGo.transform, false);
 
-            RawImage raw = panelGo.GetComponent<RawImage>();
-            raw.color = Color.white;
+            var demo = hudGo.AddComponent<LiteHtmlInventoryDemo>();
+            demo.BagView = bag.GetComponent<LiteHtmlView>();
+            demo.HotbarView = hotbar.GetComponent<LiteHtmlView>();
 
-            panelGo.AddComponent<LiteHtmlView>();
-            panelGo.AddComponent<LiteHtmlRawImage>();
-            panelGo.AddComponent<LiteHtmlInventoryDemo>();
+            return hudGo;
+        }
 
-            return panelGo;
+        /// <summary>
+        /// One panel: stretched across the screen with a margin, pinned to the
+        /// top or the bottom, and sized to its own content from there.
+        /// </summary>
+        static GameObject CreatePanel(GameObject canvasGo, string name, bool top, float inset, float guessHeight)
+        {
+            const float SideMargin = 32f;
+
+            var go = new GameObject(name, typeof(RectTransform), typeof(RawImage));
+            go.transform.SetParent(canvasGo.transform, false);
+
+            var rect = (RectTransform)go.transform;
+
+            // Stretched horizontally, pinned vertically: the pivot sits on the
+            // edge it is pinned to, so the height can grow away from that edge
+            // without the panel drifting.
+            rect.anchorMin = new Vector2(0f, top ? 1f : 0f);
+            rect.anchorMax = new Vector2(1f, top ? 1f : 0f);
+            rect.pivot = new Vector2(0.5f, top ? 1f : 0f);
+
+            rect.sizeDelta = new Vector2(-SideMargin * 2f, guessHeight);
+            rect.anchoredPosition = new Vector2(0f, top ? -inset : inset);
+
+            go.GetComponent<RawImage>().color = Color.white;
+
+            go.AddComponent<LiteHtmlView>();
+
+            // Neither panel fills its own rect right to the corners -- the page
+            // is rounded -- and a HUD that swallows touches through its corners
+            // is the kind of thing nobody notices until a device is in hand.
+            go.AddComponent<LiteHtmlRawImage>().PassThroughEmptyAreas = true;
+
+            return go;
         }
     }
 }

@@ -63,6 +63,13 @@ struct LhuContext
     bool    exp_subtree      = true;
     bool    layout_clean     = false;
     bool    pending_mutation = false;
+
+    // A vw/vh length is resolved when a style is *computed*, which happens once
+    // at parse time -- so a viewport change after that leaves every viewport
+    // relative length answering for the size the page was loaded at. Recomputing
+    // eagerly inside lhu_set_viewport() would pay for a style pass per call
+    // during a resize drag, so the viewport marks and the next layout collects.
+    bool    styles_stale     = false;
     float   layout_width     = 0.f;
     int32_t stat_skipped     = 0;
     int32_t stat_rendered    = 0;
@@ -326,13 +333,13 @@ void lhu_set_master_css(LhuContext* ctx, int32_t mode)
 
 void lhu_set_viewport(LhuContext* ctx, float width, float height)
 {
-    if(ctx)
+    if(ctx && ctx->container.set_viewport(width, height))
     {
         // vw/vh units and the containing block's height both come from here;
         // for the cache, the viewport also feeds media queries and the root
         // background's paint box, so a change can move anything.
         ctx->invalidate_layout_and_cache();
-        ctx->container.set_viewport(width, height);
+        ctx->styles_stale = true;
     }
 }
 
@@ -389,6 +396,10 @@ int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* user_css)
     // stale entry before the next successful load gets here.)
     ctx->cache.on_document_replaced();
     ctx->attach_cache();
+
+    // createFromString() computed every style against the viewport as it stands
+    // now, so whatever marked them stale has just been answered.
+    ctx->styles_stale = false;
 
     ctx->last_error.clear();
     return 1;
@@ -786,6 +797,32 @@ float lhu_layout(LhuContext* ctx, float max_width)
     if(!ctx || !ctx->doc)
     {
         return 0.f;
+    }
+
+    if(ctx->styles_stale && ctx->doc->root())
+    {
+        ctx->styles_stale = false;
+
+        // to_pixels() resolves vw against document::m_media, a snapshot taken at
+        // parse time -- so the recompute below is worthless until that snapshot
+        // is refreshed. media_changed() is the only thing that refreshes it. Its
+        // own restyle is not enough on its own: it runs only when a media query
+        // actually flips, and a page with no @media rules at all still has vw
+        // lengths to redo.
+        ctx->doc->media_changed();
+
+        ctx->doc->root()->refresh_styles();
+        ctx->doc->root()->compute_styles();
+
+        // Deliberately no rebuild_render_tree() here. It is tempting -- a media
+        // query keyed to the viewport can change `display`, and the render tree
+        // is built from computed display values -- but media_changed() above
+        // already rebuilds for exactly that case, and only for that case. Doing
+        // it unconditionally destroys and recreates every render item, and a
+        // freshly created scroll_view reports nothing to scroll until a second
+        // render has measured its content: the page scrolls, moves zero pixels,
+        // and looks like the touch was ignored.
+        ctx->layout_clean = false;
     }
 
     if(ctx->exp_subtree && ctx->layout_clean && ctx->pending_mutation && max_width == ctx->layout_width)

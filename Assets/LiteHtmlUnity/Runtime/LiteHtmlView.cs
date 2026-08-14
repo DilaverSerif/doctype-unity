@@ -35,7 +35,11 @@ namespace LiteHtmlUnity
         [Tooltip("Grow the texture vertically to fit the laid-out document.")]
         [SerializeField] private bool _autoHeight;
 
-        [SerializeField] private Color _background = new Color(1f, 1f, 1f, 0f);
+        [Tooltip("Cleared to before the page is drawn. Premultiplied: the surface composites " +
+                 "with Blend One OneMinusSrcAlpha, so a colour has to be scaled by its own " +
+                 "alpha. Transparent is (0,0,0,0), not white at zero alpha — that one adds " +
+                 "white to everything behind wherever the page paints nothing.")]
+        [SerializeField] private Color _background = new Color(0f, 0f, 0f, 0f);
 
         [Tooltip("Multiplies CSS pixels, like a browser's devicePixelRatio.")]
         [SerializeField, Range(0.5f, 4f)] private float _deviceScale = 1f;
@@ -125,6 +129,13 @@ namespace LiteHtmlUnity
         /// <summary>Quads drawn in the last frame — a direct measure of GPU cost.</summary>
         public int QuadCount => _renderer?.LastQuadCount ?? 0;
 
+        /// <summary>
+        /// One of the native retained display list's counters, or -1 when there
+        /// is no document. For instrumentation only — see LiteHtmlBenchmark.
+        /// </summary>
+        public long QuadCacheStat(LiteHtmlNative.QuadCacheStat which) =>
+            _document?.QuadCacheStat(which) ?? -1L;
+
         /// <summary>Milliseconds spent parsing the markup in the last reload.</summary>
         public float ParseMs { get; private set; }
 
@@ -136,6 +147,33 @@ namespace LiteHtmlUnity
 
         /// <summary>Total CPU cost of the last full rebuild.</summary>
         public float TotalMs => ParseMs + LayoutMs + DrawMs;
+
+        // ParseMs/LayoutMs/DrawMs are "the last time this ran", and they keep
+        // reporting it on every frame where it did not. That is what you want on
+        // a stats panel and exactly wrong for a benchmark, which needs to know
+        // how much work a frame actually did: a HUD that changes nothing would
+        // otherwise report the cost of the load it did once, forever.
+        //
+        // These are the honest version. Monotonic, so a caller samples them at
+        // both ends of a window and divides.
+
+        /// <summary>Documents parsed since this view was created.</summary>
+        public int ReloadCount { get; private set; }
+
+        /// <summary>Layout passes run since this view was created.</summary>
+        public int LayoutCount { get; private set; }
+
+        /// <summary>Frames recorded and drawn since this view was created.</summary>
+        public int RenderCount { get; private set; }
+
+        /// <summary>Milliseconds spent parsing, over the view's whole lifetime.</summary>
+        public double ParseMsTotal { get; private set; }
+
+        /// <summary>Milliseconds spent in layout, over the view's whole lifetime.</summary>
+        public double LayoutMsTotal { get; private set; }
+
+        /// <summary>Milliseconds spent recording and drawing, over the view's whole lifetime.</summary>
+        public double DrawMsTotal { get; private set; }
 
         /// <summary>
         /// Current glyph atlas dimensions.
@@ -458,6 +496,29 @@ namespace LiteHtmlUnity
         }
 
         /// <summary>
+        /// Grows the surface vertically to whatever the document laid out to,
+        /// so a panel is exactly as tall as its content.
+        /// </summary>
+        /// <remarks>
+        /// The width still comes from <see cref="SetSize"/>; only the height is
+        /// taken over. A host that positions the surface itself has to read
+        /// <see cref="Texture"/>'s height back, because nothing here touches a
+        /// RectTransform.
+        /// </remarks>
+        public bool AutoHeight
+        {
+            get => _autoHeight;
+            set
+            {
+                if (_autoHeight != value)
+                {
+                    _autoHeight = value;
+                    _needsLayout = true;
+                }
+            }
+        }
+
+        /// <summary>
         /// Resizes the surface. Layout re-runs, but the parsed document (and
         /// with it hover and active state) is kept.
         /// </summary>
@@ -549,6 +610,9 @@ namespace LiteHtmlUnity
             _stopwatch.Stop();
             ParseMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
 
+            ReloadCount++;
+            ParseMsTotal += ParseMs;
+
             if (!ok)
             {
                 Debug.LogError($"[LiteHtml] {_document.LastError}", this);
@@ -586,6 +650,9 @@ namespace LiteHtmlUnity
             float documentHeight = _document.Layout(width);
             _stopwatch.Stop();
             LayoutMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+
+            LayoutCount++;
+            LayoutMsTotal += LayoutMs;
 
             if (_autoHeight)
             {
@@ -687,6 +754,9 @@ namespace LiteHtmlUnity
 
             _stopwatch.Stop();
             DrawMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+
+            RenderCount++;
+            DrawMsTotal += DrawMs;
         }
 
         // --- input -------------------------------------------------------------

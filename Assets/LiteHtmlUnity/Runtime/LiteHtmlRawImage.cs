@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -16,17 +17,25 @@ namespace LiteHtmlUnity
     /// <summary>What a drag is touching, in the document's own terms.</summary>
     public readonly struct LiteHtmlDrag
     {
-        public LiteHtmlDrag(string elementId, Vector2 documentPoint, Vector2 screenPosition)
+        public LiteHtmlDrag(LiteHtmlView view, string elementId, Vector2 documentPoint, Vector2 screenPosition)
         {
+            View = view;
             ElementId = elementId;
             DocumentPoint = documentPoint;
             ScreenPosition = screenPosition;
         }
 
+        /// <summary>
+        /// The document the pointer is over, which is not always the one the
+        /// drag started in — an item can be dragged from one surface onto
+        /// another. Null when the pointer is over no page at all.
+        /// </summary>
+        public LiteHtmlView View { get; }
+
         /// <summary>Id of the element under the pointer, or null over bare page.</summary>
         public string ElementId { get; }
 
-        /// <summary>Pointer position in CSS pixels.</summary>
+        /// <summary>Pointer position in CSS pixels, in <see cref="View"/>'s document.</summary>
         public Vector2 DocumentPoint { get; }
 
         /// <summary>
@@ -39,11 +48,16 @@ namespace LiteHtmlUnity
 
     [RequireComponent(typeof(RawImage))]
     [AddComponentMenu("LiteHtml/LiteHtml Raw Image")]
-    public class LiteHtmlRawImage : MonoBehaviour,
+    public class LiteHtmlRawImage : MonoBehaviour, ICanvasRaycastFilter,
         IPointerMoveHandler, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler, IScrollHandler,
         IBeginDragHandler, IDragHandler, IEndDragHandler
     {
         [SerializeField] private LiteHtmlView _view;
+
+        [Tooltip("Let a touch that lands on bare page fall through to whatever is behind. " +
+                 "Only elements carrying an id catch input, so a HUD stretched over the whole " +
+                 "screen does not swallow the game everywhere it happens to be transparent.")]
+        [SerializeField] private bool _passThroughEmptyAreas;
 
         [Tooltip("Resize the document to match the RawImage's rect as it changes.")]
         [SerializeField] private bool _matchRectSize = true;
@@ -51,6 +65,10 @@ namespace LiteHtmlUnity
         [Tooltip("Render at the canvas scale factor so text stays sharp, and treat one CSS pixel " +
                  "as one canvas unit. Turn off only to drive DeviceScale yourself.")]
         [SerializeField] private bool _matchCanvasScale = true;
+
+        [Tooltip("Resolution multiplier, like a game's render scale. Below 1 the page is drawn into " +
+                 "fewer pixels and stretched back up; the layout is unchanged.")]
+        [SerializeField, Range(0.25f, 2f)] private float _renderScale = 1f;
 
         [Tooltip("Composites the surface. Leave empty for the built-in premultiplied-alpha " +
                  "material, which is what a see-through page needs.")]
@@ -144,7 +162,10 @@ namespace LiteHtmlUnity
                 // DeviceScale keeps the CSS viewport equal to the rect in canvas
                 // units, so a layout is authored once and stays put at any
                 // resolution.
-                float scale = ResolveScale();
+                // RenderScale multiplies into both, which is what keeps the CSS
+                // viewport fixed: pixels and DeviceScale move together, so their
+                // quotient -- the layout -- does not move at all.
+                float scale = ResolveScale() * _renderScale;
                 Vector2 pixels = _rect.rect.size * scale;
 
                 if ((pixels != _lastPixelSize || !Mathf.Approximately(scale, _lastScale)) &&
@@ -227,6 +248,79 @@ namespace LiteHtmlUnity
             return true;
         }
 
+        /// <summary>
+        /// Resolution multiplier for the surface, like a game's render scale.
+        /// </summary>
+        /// <remarks>
+        /// Scales the pixels and DeviceScale together, so the CSS viewport — and
+        /// therefore the layout, and the quad stream — comes out identical and
+        /// only the resolution changes. Below 1 the page is drawn into fewer
+        /// pixels and stretched back up: softer text, proportionally less fill.
+        /// <para>
+        /// Its other use is measurement. Quad count and fill move together in
+        /// any normal page, so a slower frame cannot be blamed on either one;
+        /// holding the quads fixed and cutting the pixels is what separates them.
+        /// </para>
+        /// </remarks>
+        public float RenderScale
+        {
+            get => _renderScale;
+            set
+            {
+                value = Mathf.Clamp(value, 0.25f, 2f);
+
+                if (!Mathf.Approximately(_renderScale, value))
+                {
+                    _renderScale = value;
+
+                    // The cached pixel size was derived under the old factor.
+                    _lastPixelSize = Vector2.zero;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether touches landing on bare page fall through to what is behind.
+        /// </summary>
+        public bool PassThroughEmptyAreas
+        {
+            get => _passThroughEmptyAreas;
+            set => _passThroughEmptyAreas = value;
+        }
+
+        /// <summary>
+        /// Decides whether a raycast stops here, so a page that is mostly holes
+        /// stops acting like a sheet of glass over the game.
+        /// </summary>
+        /// <remarks>
+        /// The rule is "an element with an id catches the pointer, bare page does
+        /// not". That is coarser than asking whether the pixel under the finger
+        /// was painted, but it is the rule the page author already works in: the
+        /// parts a game reacts to are the parts it named, and a decorative
+        /// wrapper left unnamed stays out of the way. The alternative — reading
+        /// back the surface's alpha — costs a GPU round trip per pointer move.
+        /// <para>
+        /// Only consulted while <see cref="PassThroughEmptyAreas"/> is on; the
+        /// default is off, because a page that fills its rect wants every touch.
+        /// </para>
+        /// </remarks>
+        public bool IsRaycastLocationValid(Vector2 screenPoint, Camera eventCamera)
+        {
+            if (!_passThroughEmptyAreas || _view == null || _rect == null)
+            {
+                return true;
+            }
+
+            // Off the rect entirely: uGUI has already decided, and a miss here
+            // would only be reported as a miss again.
+            if (!TryGetDocumentPoint(screenPoint, eventCamera, out Vector2 p))
+            {
+                return false;
+            }
+
+            return !string.IsNullOrEmpty(_view.ElementAt(p));
+        }
+
         public void OnPointerMove(PointerEventData eventData)
         {
             if (TryGetDocumentPoint(eventData, out Vector2 p))
@@ -289,12 +383,65 @@ namespace LiteHtmlUnity
 
         private bool _dragClaimed;
 
+        // Reused across every probe: one drag issues one of these per frame, and
+        // a fresh List per frame is a fresh allocation per frame.
+        private static readonly List<RaycastResult> s_hits = new List<RaycastResult>();
+
+        /// <summary>
+        /// What the pointer is over, across every LiteHtml surface on screen.
+        /// </summary>
+        /// <remarks>
+        /// Not just this one. uGUI sends an entire drag to the object it began
+        /// on, so an inventory drawn on its own surface would never hear about
+        /// the hotbar drawn on another one — the drop would report nothing and
+        /// the item would spring back. Answering with whatever page is actually
+        /// under the finger is what lets a HUD be several panels instead of one
+        /// screen-sized sheet.
+        /// <para>
+        /// The search runs through EventSystem rather than over a list of live
+        /// surfaces, which buys the whole of uGUI's ordering for free: canvas
+        /// sorting order, hierarchy order, and <see cref="IsRaycastLocationValid"/>,
+        /// so a surface that is see-through at this point is already excluded.
+        /// ElementAt itself is a pure query, so probing a drop target mid-drag
+        /// does not light it up as hovered.
+        /// </para>
+        /// </remarks>
         private LiteHtmlDrag Probe(PointerEventData eventData)
         {
-            // ElementAt is a pure query, so probing a drop target mid-drag does
-            // not light it up as hovered.
+            if (EventSystem.current != null)
+            {
+                s_hits.Clear();
+                EventSystem.current.RaycastAll(eventData, s_hits);
+
+                // Front to back: the topmost page that names something wins.
+                for (int i = 0; i < s_hits.Count; i++)
+                {
+                    var surface = s_hits[i].gameObject.GetComponent<LiteHtmlRawImage>();
+                    if (surface == null || surface._view == null)
+                    {
+                        continue;
+                    }
+
+                    if (!surface.TryGetDocumentPoint(eventData.position, eventData.pressEventCamera,
+                                                     out Vector2 hit))
+                    {
+                        continue;
+                    }
+
+                    string id = surface._view.ElementAt(hit);
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        return new LiteHtmlDrag(surface._view, id, hit, eventData.position);
+                    }
+                }
+            }
+
+            // This surface, as before. Either the raycast found no page that
+            // names anything under the finger, or there is no EventSystem at all
+            // — a bare canvas, or a test — and the cross-surface search is the
+            // addition, not the replacement.
             return TryGetDocumentPoint(eventData, out Vector2 p)
-                ? new LiteHtmlDrag(_view != null ? _view.ElementAt(p) : null, p, eventData.position)
+                ? new LiteHtmlDrag(_view, _view != null ? _view.ElementAt(p) : null, p, eventData.position)
                 : default;
         }
 
@@ -302,13 +449,15 @@ namespace LiteHtmlUnity
         {
             _dragClaimed = false;
 
-            if (_view == null)
+            // No filter means nothing can claim the gesture, and Probe costs a
+            // full raycast — so a page that only ever scrolls does not pay for
+            // the cross-surface search it will never read.
+            if (_view == null || DragFilter == null)
             {
                 return;
             }
 
-            LiteHtmlDrag drag = Probe(eventData);
-            _dragClaimed = DragFilter != null && DragFilter(drag);
+            _dragClaimed = DragFilter(Probe(eventData));
         }
 
         public void OnDrag(PointerEventData eventData)

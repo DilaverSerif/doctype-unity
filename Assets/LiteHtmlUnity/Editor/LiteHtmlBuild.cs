@@ -6,6 +6,7 @@ using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace LiteHtmlUnity.EditorTools
 {
@@ -26,18 +27,33 @@ namespace LiteHtmlUnity.EditorTools
     {
         const string DemoScene = "Assets/LiteHtmlUnity/Samples/LiteHtmlDemo.unity";
         const string InventoryScene = "Assets/LiteHtmlUnity/Samples/LiteHtmlInventoryDemo.unity";
+        const string BenchmarkScene = "Assets/LiteHtmlUnity/Samples/LiteHtmlBenchmark.unity";
         const string OutputDir = "Native/build/out";
 
         /// <summary>
         /// The portrait drag-and-drop inventory, as its own package so it can sit
         /// on a device next to the main demo rather than replacing it.
         /// </summary>
+        [MenuItem("Tools/LiteHtml/Build Inventory APK")]
         public static void AndroidInventory()
         {
             Build(InventoryScene, "com.dopaminefact.litehtmlinventory", "LiteHtml Inventory",
                   "litehtml-inventory.apk", UIOrientation.Portrait);
         }
 
+        /// <summary>
+        /// The on-device benchmark. Its own package so it can be left installed
+        /// next to the demos and re-run whenever something in the pipeline
+        /// changes.
+        /// </summary>
+        [MenuItem("Tools/LiteHtml/Build Benchmark APK")]
+        public static void AndroidBenchmark()
+        {
+            Build(BenchmarkScene, "com.dopaminefact.litehtmlbench", "LiteHtml Bench",
+                  "litehtml-bench.apk", UIOrientation.Portrait, forMeasurement: true);
+        }
+
+        [MenuItem("Tools/LiteHtml/Build Demo APK")]
         public static void Android()
         {
             Build(ResolveScene(), "com.dopaminefact.litehtmldemo", "LiteHtml Demo",
@@ -45,7 +61,7 @@ namespace LiteHtmlUnity.EditorTools
         }
 
         static void Build(string scene, string bundleId, string product, string apkName,
-                          UIOrientation orientation)
+                          UIOrientation orientation, bool forMeasurement = false)
         {
             string apk = Path.GetFullPath(Path.Combine(Application.dataPath, "..", OutputDir, apkName));
             Directory.CreateDirectory(Path.GetDirectoryName(apk));
@@ -66,6 +82,29 @@ namespace LiteHtmlUnity.EditorTools
             // The demo drives its own frame rate; leaving vsync on would hide
             // what the CPU numbers on the overview page are actually saying.
             QualitySettings.vSyncCount = 0;
+
+            // Vulkan first on every Android build, GLES3 only as a fallback.
+            // Two reasons, and the second is the one that made this necessary:
+            // it is what a game shipping today runs on, and it is the only one
+            // of the two that answers FrameTimingManager. Under GLES3 every GPU
+            // figure the benchmark reports is "n/a", which is exactly the number
+            // the whole exercise exists to find.
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.Android,
+                                           new[] { GraphicsDeviceType.Vulkan, GraphicsDeviceType.OpenGLES3 });
+
+            // FrameTimingManager returns nothing at all unless this is on, on
+            // every platform and every graphics API. Without it the benchmark's
+            // GPU column is "n/a" from top to bottom, which reads like the
+            // device refused to answer rather than like nobody asked.
+            PlayerSettings.enableFrameTimingStats = forMeasurement;
+
+            // Unity paces frames to a whole divisor of the refresh rate. On a
+            // phone that misses 16.7 ms once, that means a hard lock to 30 fps —
+            // and then every scenario cheaper than 33 ms reports 33 ms and the
+            // frame-time column says nothing. A shipping game wants the pacer;
+            // a measurement of one does not.
+            PlayerSettings.Android.optimizedFramePacing = !forMeasurement;
 
             var options = new BuildPlayerOptions
             {
