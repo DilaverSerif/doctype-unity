@@ -87,6 +87,73 @@ LHU_API int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* use
 // without a layout in between draws the previous frame's line boxes.
 LHU_API int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8);
 
+// Replaces the inline style of the first element matching `selector` with `css`
+// -- the contents of a style="..." attribute, e.g. "left:40px;background:#e11".
+// Returns 1 when an element matched and its style actually changed, 0 otherwise,
+// including when `css` is identical to what the element already carries.
+//
+// This exists for the frame-by-frame case lhu_set_text() cannot serve: an
+// animation that moves a bar, resizes a box or recolours a gradient by writing a
+// new style attribute. On the demo's animation page that was measured on a
+// Redmi Note 12 Pro+ at 3.45 ms of parsing per frame against 0.07 ms of layout
+// and 0.31 ms of drawing, i.e. essentially all of the cost was re-parsing HTML
+// that had not structurally changed.
+//
+// WHAT IT REDOES. An element's style="" block is not stored separately: litehtml
+// folds it into the element's whole declaration map in compute_styles(), on top
+// of the declarations the matched selectors contributed, and both style::add()
+// and style::combine() merge rather than replace. Replacing an inline style
+// therefore means emptying that map and rebuilding it -- selectors first, new
+// inline block second -- and then recomputing the element's computed values and
+// those of every descendant, because inherited properties (color, font,
+// line-height, white-space) flow downwards. Nothing is re-parsed except the one
+// new declaration block, no selector is re-matched, and the DOM is untouched.
+//
+// `css` may be the empty string, which removes the inline style entirely.
+// Declarations litehtml cannot parse are dropped, exactly as they are dropped
+// when the same text arrives on a style attribute in parsed HTML.
+//
+// WHAT IT DOES NOT COVER, stated as plainly as lhu_set_text()'s limits:
+//   * It changes one element's inline style. It does not add or remove elements,
+//     does not touch class or id, and does not edit a stylesheet rule. A change
+//     that has to restructure the DOM still needs lhu_load_html().
+//   * It always forces a full document::render(). Unlike lhu_set_text(), which
+//     can prove a text change moved nothing, a style declaration has no small set
+//     of numbers to compare, so the layout short-circuit is disarmed on every
+//     successful call. The caller must run lhu_layout() before lhu_record().
+//   * A change to display, float or position rebuilds the whole render tree and
+//     throws the retained display list away -- correct, but the frame it lands on
+//     costs about what a fresh layout+record costs. It is not a per-frame move.
+//   * Selector matching is re-run for the mutated element and for nothing else.
+//     That is exact for every selector CSS actually has, because none of them
+//     read an element's inline style -- with one exception, an attribute selector
+//     on [style], where a descendant's or a ::before's match could change and
+//     will not be noticed. No game UI writes one; if a page does, it needs
+//     lhu_load_html().
+//   * ::before and ::after content is left alone. Re-applying a pseudo selector
+//     is not a merge in litehtml -- el_before_after_base::add_style() re-reads
+//     `content` and replaces the pseudo element's children outright -- so the
+//     generated content keeps the declarations it already had and only
+//     re-inherits. That is correct for an inline style edit and is what keeps the
+//     render tree valid; a page whose ::before content itself must change needs
+//     lhu_load_html().
+//   * var() is honoured for the mutated element and for any descendant that
+//     carries the var() in its own style="" attribute, but a descendant whose
+//     *stylesheet* rule reads a custom property that this call changed keeps the
+//     value that was substituted into it at parse time. litehtml substitutes
+//     var() destructively into the declaration map, and this call deliberately
+//     does not re-derive the descendants' declaration maps.
+//   * CSS counters drift: refreshing an element's styles re-applies any
+//     counter-increment its selectors declare, and litehtml's own :hover restyle
+//     has the same behaviour. A page that animates inline styles on an element
+//     under a counter-increment rule should not use this call.
+//   * Cost scales with the size of the mutated element's SUBTREE, not with the
+//     document. Measured on the 150-row inventory page: 0.012 ms on a leaf span,
+//     0.98 ms on the container all 150 rows hang off, against 3.1 ms to re-parse
+//     the page. Mutating a leaf is what this is for.
+//   * Not thread-safe, like everything else on a context.
+LHU_API int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css);
+
 // Runs layout at the given available width. Returns the document height.
 //
 // litehtml has no incremental layout: document::render() re-lays-out every
@@ -173,6 +240,44 @@ LHU_API void lhu_exp_set_enabled(LhuContext* ctx, int32_t enabled);
 // Reports the current setting and how many lhu_layout() calls each path has
 // served since the context was created. Any pointer may be NULL.
 LHU_API void lhu_exp_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_skipped, int32_t* out_rendered);
+
+// --- experiment: inline style mutation (E7) ---------------------------------
+//
+// lhu_set_style() is switchable at runtime for the same reason every other
+// experiment here is: one binary has to be measurable both ways on the device.
+// The default comes from LHU_EXP_SETSTYLE, read once per context at
+// lhu_create(); "0" disables, anything else (or unset) enables.
+//
+// Disabled means lhu_set_style() refuses the call and returns 0, so a host falls
+// back to rebuilding the page with lhu_load_html() -- which is the baseline the
+// feature is measured against. It never silently half-applies.
+//
+// Two further environment variables are measurement knobs, not features, and
+// both are off by default:
+//
+//   LHU_SETSTYLE_DEEP=1  re-runs litehtml's recursive refresh_styles() over the
+//     whole mutated subtree instead of only the element. Measured at +29% on a
+//     450-element subtree (0.98 -> 1.27 ms) for byte-identical output, which is
+//     the evidence that the descendants' selector matching is redundant. It also
+//     takes the ::before path described above, so it rebuilds the render tree
+//     whenever the mutated subtree contains generated content -- correct, but an
+//     order of magnitude more expensive.
+//
+//   LHU_SETSTYLE_MEMO=1  stops bypassing the E6 inline-style parse memo, i.e.
+//     feeds every one-shot animation string into it. Measured: the memo fills to
+//     its 1024-entry cap within three bench pages and stays there, after which no
+//     genuinely repeated string can ever be memoized again. Per-call time is
+//     inside the noise; the cap is the damage.
+LHU_API void lhu_exp_setstyle_set_enabled(LhuContext* ctx, int32_t enabled);
+
+// Reports the setting, how many lhu_set_style() calls actually changed
+// something, how many of those had to rebuild the render tree, and how many
+// entries the inline-style parse memo (E6) is currently holding -- the last one
+// because a page that writes a unique style string every frame is exactly the
+// workload that memo is worst at, and it should be watched. Any pointer may be
+// NULL.
+LHU_API void lhu_exp_setstyle_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_applied,
+                                    int32_t* out_tree_rebuilds, int32_t* out_style_cache_entries);
 
 // --- experiment: retained display list --------------------------------------
 //

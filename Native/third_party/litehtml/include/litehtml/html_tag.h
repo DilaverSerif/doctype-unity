@@ -60,6 +60,19 @@ namespace litehtml
         void        apply_stylesheet(const litehtml::css& stylesheet) override;
         void        refresh_styles() override;
 
+        // LHU PATCH (experiment E7, lhu_set_style). refresh_styles() without the recursion:
+        // rebuilds *this* element's m_style from the selectors that matched it and nothing
+        // else. An inline style="" edit cannot change which selectors match anything (the
+        // only thing that could is an attribute selector reading [style], which litehtml
+        // re-evaluates from m_attrs and which no game UI writes), so the descendants' work
+        // that refresh_styles() does is provably redundant for that one caller.
+        void        refresh_styles_self();
+
+      private:
+        void        refresh_styles_impl(bool apply_pseudo_elements);
+
+      public:
+
         bool is_white_space() const override;
         bool is_body() const override;
         bool is_break() const override;

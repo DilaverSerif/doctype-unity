@@ -72,6 +72,23 @@ void litehtml::render_item::calc_outlines(pixel_t parent_width)
 
     m_padding.top    = m_element->css().get_padding().top.calc_percent(parent_width);
     m_padding.bottom = m_element->css().get_padding().bottom.calc_percent(parent_width);
+
+    // LHU PATCH (experiment E7). Upstream re-reads seven of the eight outline
+    // lengths here and leaves the top and bottom *border* widths behind; those are
+    // written once, in the render_item constructor, and never again. Layout
+    // therefore keeps using the border-top/bottom the element had when the render
+    // tree was built while draw_background() paints the current one -- a document
+    // whose styles never change after a parse cannot see the difference, and one
+    // that restyles in place (lhu_set_style, and litehtml's own :hover) renders a
+    // box whose height is short by the border it is visibly drawing.
+    //
+    // This is not a behaviour change for a parsed document: css_properties::compute
+    // ends with snap_border_width(), which leaves every border width in px, and
+    // calc_percent() on a px length returns that same value -- which is exactly the
+    // number the constructor's to_pixels() produced. It is the same conversion the
+    // left and right borders two lines up have always used.
+    m_borders.top    = m_element->css().get_borders().top.width.calc_percent(parent_width);
+    m_borders.bottom = m_element->css().get_borders().bottom.width.calc_percent(parent_width);
 }
 
 litehtml::pixel_t litehtml::render_item::calc_auto_margins(pixel_t parent_width)

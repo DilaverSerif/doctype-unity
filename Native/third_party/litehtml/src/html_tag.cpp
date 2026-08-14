@@ -1471,63 +1471,78 @@ namespace litehtml
             }
         }
 
+        refresh_styles_impl(true);
+    }
+
+    // LHU PATCH (experiment E7): refresh_styles() for one element, with two differences from
+    // the recursive original, both of them required by the caller that uses it
+    // (lhu_set_style, which changed nothing but this element's style="" text).
+    //
+    // 1. No recursion. An inline style edit cannot change which selectors match anything --
+    //    selectors read the tag, classes, id, attributes and tree position, none of which
+    //    moved -- so re-deriving the descendants' declaration maps would produce exactly the
+    //    maps they already hold. Measured at +29% on a 450-element subtree for no change in
+    //    output.
+    //
+    // 2. No ::before/::after. This one is not an optimisation, it is a correctness
+    //    requirement. el_before_after_base::add_style() does not merely merge declarations:
+    //    it re-reads `content` and REPLACES the pseudo element's children with freshly built
+    //    text nodes. The render tree still points at the old ones, so re-applying a pseudo
+    //    selector to an element that is not being rebuilt from scratch silently detaches the
+    //    generated content from the boxes that lay it out and draws last frame's metrics.
+    //    Skipping those branches is exactly right here: they never write to *this* element's
+    //    m_style (only to the pseudo child's) and never set usel->m_used, so the map this
+    //    function is rebuilding comes out identical -- and the pseudo child, whose matched
+    //    selectors did not change either, keeps the declarations it already had and still
+    //    re-inherits through the compute_styles() the caller runs next.
+    void litehtml::html_tag::refresh_styles_self()
+    {
+        refresh_styles_impl(false);
+    }
+
+    void litehtml::html_tag::refresh_styles_impl(bool apply_pseudo_elements)
+    {
         m_style.clear();
 
         for(auto& usel : m_used_styles)
         {
             usel->m_used = false;
 
-            if(usel->m_selector->is_media_valid())
+            if(!usel->m_selector->is_media_valid())
             {
-                int apply = select(*usel->m_selector, false);
-
-                if(apply != select_no_match)
-                {
-                    if(apply & select_match_pseudo_class)
-                    {
-                        if(select(*usel->m_selector, true))
-                        {
-                            if(apply & select_match_with_after)
-                            {
-                                element::ptr el = get_element_after(*usel->m_selector->m_style, false);
-                                if(el)
-                                {
-                                    el->add_style(*usel->m_selector->m_style);
-                                }
-                            } else if(apply & select_match_with_before)
-                            {
-                                element::ptr el = get_element_before(*usel->m_selector->m_style, false);
-                                if(el)
-                                {
-                                    el->add_style(*usel->m_selector->m_style);
-                                }
-                            } else
-                            {
-                                add_style(*usel->m_selector->m_style);
-                                usel->m_used = true;
-                            }
-                        }
-                    } else if(apply & select_match_with_after)
-                    {
-                        element::ptr el = get_element_after(*usel->m_selector->m_style, false);
-                        if(el)
-                        {
-                            el->add_style(*usel->m_selector->m_style);
-                        }
-                    } else if(apply & select_match_with_before)
-                    {
-                        element::ptr el = get_element_before(*usel->m_selector->m_style, false);
-                        if(el)
-                        {
-                            el->add_style(*usel->m_selector->m_style);
-                        }
-                    } else
-                    {
-                        add_style(*usel->m_selector->m_style);
-                        usel->m_used = true;
-                    }
-                }
+                continue;
             }
+
+            const int apply = select(*usel->m_selector, false);
+            if(apply == select_no_match)
+            {
+                continue;
+            }
+
+            if((apply & select_match_pseudo_class) && !select(*usel->m_selector, true))
+            {
+                continue;
+            }
+
+            if(apply & (select_match_with_after | select_match_with_before))
+            {
+                if(!apply_pseudo_elements)
+                {
+                    continue;
+                }
+
+                element::ptr el = (apply & select_match_with_after)
+                                      ? get_element_after(*usel->m_selector->m_style, false)
+                                      : get_element_before(*usel->m_selector->m_style, false);
+                if(el)
+                {
+                    el->add_style(*usel->m_selector->m_style);
+                }
+                continue;
+            }
+
+            add_style(*usel->m_selector->m_style);
+            usel->m_used = true;
         }
     }
 

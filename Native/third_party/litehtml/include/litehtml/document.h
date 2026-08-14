@@ -154,6 +154,16 @@ namespace litehtml
         void                         add_fixed_box(const position& pos);
         void                         add_media_list(const media_query_list_list::ptr& list);
         bool                         media_changed();
+
+        // LHU PATCH (experiment E7, lhu_set_style). The render tree is built once in
+        // createFromString() from the *computed* display values, so an element whose
+        // display/float/position changed after that point either has no render item or has
+        // one of the wrong class, and document::render() will never notice -- it walks the
+        // render tree it was given. Anything that can change those values outside a parse has
+        // to rebuild the tree, which is what media_changed() already did by hand; this is that
+        // sequence, factored out and with the fix_tables_layout() step createFromString()
+        // performs and media_changed() was missing.
+        void                         rebuild_render_tree();
         bool                         lang_changed();
         bool                         match_lang(const std::string& lang);
         void                         add_tabular(const std::shared_ptr<render_item>& el);

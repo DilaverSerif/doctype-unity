@@ -256,6 +256,102 @@ std::string page_pre(const char* label = "Bolum 12")
            "<div id='pr' style='margin:8px;font-size:15px;white-space:pre'>") + label + "</div></body>";
 }
 
+// --- pages for lhu_set_style -------------------------------------------------
+//
+// Each takes the style string of the element carrying id='mark', so the exact
+// same function builds both the page that gets mutated and the reference page
+// that already contains the new style. That is what makes "a mutation must equal
+// a re-parse" a comparison of two things that differ in nothing else.
+
+using StylePage = std::string (*)(const char*);
+
+// The only page here with a stylesheet. Everything above changes an element
+// whose declaration map contains nothing but its own style="" block, which
+// cannot tell a rebuild of that map apart from a merge into it. This one can:
+//   * .box sets padding, background and font-size, so removing the matching
+//     inline declaration has to let the RULE's value come back rather than
+//     leaving the inline one behind;
+//   * .box::before contributes a generated box, which refresh_styles_self()
+//     re-adds a style to without having cleared it first -- the one place that
+//     shortcut touches something it did not clear;
+//   * #mark has higher specificity than .box, so the cascade order has to
+//     survive a rebuild;
+//   * .box b is a descendant rule, which is what proves the descendants' own
+//     matched selectors are still in force after the parent was restyled.
+std::string page_style_css(const char* mark_style)
+{
+    return std::string("<html><head><style>"
+           ".box { padding:5px 7px; background:#243050; font-size:15px; color:#cfd6e6 }"
+           ".box::before { content:'* '; color:#e11d48 }"
+           "#mark { border-bottom:2px solid #4af }"
+           ".box b { color:#ffd166; font-size:18px }"
+           "</style></head>"
+           "<body style='margin:0;font-family:sans-serif;background:#0f1117'>"
+           "<div style='padding:6px'>"
+           "<div style='font-size:13px;color:#8e97b3'>Ustteki</div>"
+           "<div id='mark' class='box' style='") + mark_style + "'>Kutu <b>kalin</b> metin</div>"
+           "<div style='font-size:13px;color:#8e97b3'>Alttaki</div>"
+           "</div></body></html>";
+}
+
+// The marked element is a plain block with siblings above and below it, so a
+// size change has to move what follows and a colour change must move nothing.
+std::string page_style_flow(const char* mark_style)
+{
+    return std::string("<body style='margin:0;font-family:sans-serif;color:#e8e8ef;background:#0f1117'>"
+           "<div style='padding:8px'>"
+           "<div style='font-size:14px;padding:3px 0'>Ustteki satir</div>"
+           "<div id='mark' style='") + mark_style + "'>Hareketli kutu</div>"
+           "<div style='font-size:14px;padding:3px 0'>Alttaki satir</div>"
+           "<div style='font-size:13px;color:#8e97b3'>Son satir burada</div>"
+           "</div></body>";
+}
+
+// The marked element is a CONTAINER. Colour, font-size, line-height and
+// white-space all inherit, so a change here has to reach text nodes two levels
+// below it -- and those text nodes have to be re-measured, not just recoloured,
+// or they keep laying out at the old font.
+std::string page_style_inherit(const char* mark_style)
+{
+    return std::string("<body style='margin:0;font-family:sans-serif;background:#0f1117'>"
+           "<div style='padding:6px'>"
+           "<div id='mark' style='") + mark_style + "'>"
+           "<div style='padding:2px 0'>Birinci <b>kalin</b> satir</div>"
+           "<div style='padding:2px 0'><span>Ikinci</span> <i>egik</i> satir metni</div>"
+           "<div style='padding:2px 0'><span style='color:#8ab4ff'>Ucuncu</span> satir</div>"
+           "</div>"
+           "<div style='font-size:13px;color:#8e97b3'>Kapsayicinin disi</div>"
+           "</div></body>";
+}
+
+// A flex item. litehtml builds render_item_flex for the container and wraps the
+// items' loose content in anonymous boxes, so the render tree here does not
+// mirror the DOM.
+std::string page_style_flex(const char* mark_style)
+{
+    return std::string("<body style='margin:0;font-family:sans-serif;color:#e8e8ef'>"
+           "<div style='display:flex;margin:8px;font-size:14px'>"
+           "<div style='padding:4px 8px;background:#1b2030'>Sol taraf</div>"
+           "<div id='mark' style='") + mark_style + "'>Orta</div>"
+           "<div style='padding:4px 8px;background:#1b2030'>Sag taraf</div>"
+           "</div></body>";
+}
+
+// A table cell. Column widths are negotiated across every row, so resizing this
+// cell moves cells it has no relationship with in the DOM.
+std::string page_style_table(const char* mark_style)
+{
+    return std::string("<body style='margin:0;font-family:sans-serif;color:#e8e8ef'>"
+           "<div style='margin:8px'><table style='border-collapse:collapse;font-size:13px'>"
+           "<tr><td style='padding:4px 9px;border:1px solid #333'>Cozunurluk</td>"
+           "<td id='mark' style='") + mark_style + "'>1920x1080</td>"
+           "<td style='padding:4px 9px;border:1px solid #333'>varsayilan</td></tr>"
+           "<tr><td style='padding:4px 9px;border:1px solid #333'>Golgeler cok uzun bir etiket</td>"
+           "<td style='padding:4px 9px;border:1px solid #333'>Yuksek</td>"
+           "<td style='padding:4px 9px;border:1px solid #333'>onerilen</td></tr>"
+           "</table></div></body>";
+}
+
 // --- benchmark ---------------------------------------------------------------
 
 struct QuadStats
@@ -296,6 +392,15 @@ struct UpdateScenario
     const char* alt_a      = nullptr;
     const char* alt_b      = nullptr;
     const char* structural = nullptr;
+
+    // The lhu_set_style() scenario. `style_fmt` takes exactly four %d and is
+    // fed a different set of numbers every iteration, so every frame writes a
+    // style string no element has ever carried -- which is what an animation
+    // does, and the workload the inline-style parse memo (E6) is worst at.
+    // Measuring anything less would be measuring a cache hit that a real
+    // animation never gets.
+    const char* style_selector = nullptr;
+    const char* style_fmt      = nullptr;
 };
 
 void bench_page(LhuContext* ctx, const char* name, const std::string& html, float width, float height,
@@ -312,7 +417,18 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
 
     const QuadStats stats = analyse(frame);
 
+    // Taken from the warm-up frame, like `stats` above. The loop below leaves
+    // `frame` holding whatever the last mutation produced, and a style mutation
+    // can legitimately change the document height -- printing that under the
+    // page's own heading would quietly redefine the baseline the correctness
+    // section asserts these pages against.
+    const float base_doc_w = frame.doc_width;
+    const float base_doc_h = frame.doc_height;
+
     std::vector<double> parse, layout, record, relayout, set_only, text_update, struct_update;
+    std::vector<double> style_only, style_update;
+    style_only.reserve(iterations);
+    style_update.reserve(iterations);
     parse.reserve(iterations);
     layout.reserve(iterations);
     record.reserve(iterations);
@@ -322,6 +438,10 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
     struct_update.reserve(iterations);
 
     int update_failures = 0;
+    int style_failures  = 0;
+
+    int32_t setstyle_on = 0, style_entries_before = 0, style_entries_after = 0;
+    lhu_exp_setstyle_stats(ctx, &setstyle_on, nullptr, nullptr, &style_entries_before);
 
     // Which layout path the TEXT UPDATE rows below actually took. Printed rather
     // than asserted: the same binary is meant to be run with LHU_EXP_SUBTREE=0
@@ -385,7 +505,42 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
                 }
             }
         }
+
+        if(upd.style_selector)
+        {
+            // What one frame of an animation costs: replace an element's inline
+            // style, lay out, record. The alternative measured against it is the
+            // FULL REBUILD row above -- which is exactly what a host has to do
+            // today, because there is no other way to change a style.
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), upd.style_fmt, i % 251, (i * 3) % 251, (i * 7) % 251, i % 6);
+
+            auto ts = Clock::now();
+            const int32_t s_ok = lhu_set_style(ctx, upd.style_selector, buf);
+            style_only.push_back(ms_since(ts));
+
+            if(!s_ok)
+            {
+                if(setstyle_on)
+                {
+                    ++style_failures;
+                } else
+                {
+                    // LHU_EXP_SETSTYLE=0. Measure what the host falls back to, so
+                    // the two halves of the A/B are the same frame, not one frame
+                    // and one refusal. Reloading the same string is within a few
+                    // characters of regenerating it with the new style in place.
+                    lhu_load_html(ctx, html.c_str(), nullptr);
+                }
+            }
+
+            lhu_layout(ctx, width);
+            lhu_record(ctx, &frame);
+            style_update.push_back(ms_since(ts));
+        }
     }
+
+    lhu_exp_setstyle_stats(ctx, nullptr, nullptr, nullptr, &style_entries_after);
 
     int32_t skipped_after = 0, rendered_after = 0;
     lhu_exp_stats(ctx, nullptr, &skipped_after, &rendered_after);
@@ -397,6 +552,8 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
     const Stats so = Stats::from(set_only);
     const Stats tu = Stats::from(text_update);
     const Stats su = Stats::from(struct_update);
+    const Stats yo = Stats::from(style_only);
+    const Stats yu = Stats::from(style_update);
 
     // Summed from medians, not means: a single scheduler or thermal hiccup
     // triples one iteration and drags a mean far enough to look like a
@@ -410,7 +567,7 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
     const double overdraw = stats.covered_px / (static_cast<double>(width) * height);
 
     std::printf("\n=== %s (%.0fx%.0f) ===\n", name, width, height);
-    std::printf("  doc %.4f x %.4f\n", frame.doc_width, frame.doc_height);
+    std::printf("  doc %.4f x %.4f\n", base_doc_w, base_doc_h);
     std::printf("  quads %d (%d glyph)   verts %lld   vertex %.0f KB + index %.0f KB per frame\n", stats.total,
                 stats.glyphs, verts, vertex_kb, index_kb);
     std::printf("  overdraw ~%.1fx (sum of quad areas / surface)\n", overdraw);
@@ -439,12 +596,30 @@ void bench_page(LhuContext* ctx, const char* name, const std::string& html, floa
             std::printf("  !! %d lhu_set_text calls reported no change: %s\n", update_failures, lhu_last_error(ctx));
         }
     }
+    if(upd.style_selector)
+    {
+        std::printf("  %-22s %8.3f %8.3f %8.3f %8.3f\n",
+                    setstyle_on ? "lhu_set_style only" : "  (refusal only)", yo.mean, yo.p50, yo.p95, yo.max);
+        std::printf("  %-22s %8.3f %8.3f %8.3f %8.3f   <- %s\n", "STYLE UPDATE", yu.mean, yu.p50, yu.p95, yu.max,
+                    setstyle_on ? "set_style+layout+record" : "LHU_EXP_SETSTYLE=0: full rebuild fallback");
+        std::printf("  inline-style memo (E6): %d -> %d entries over %d unique style strings\n",
+                    style_entries_before, style_entries_after, iterations);
+        if(style_failures)
+        {
+            std::printf("  !! %d lhu_set_style calls failed: %s\n", style_failures, lhu_last_error(ctx));
+        }
+    }
     std::printf("  parse is %.0f%% of a full rebuild; removing it would leave %.3f ms\n", p.p50 / full * 100.0,
                 rl.p50);
     if(upd.selector && tu.mean > 0.0)
     {
         std::printf("  a text update is %.0fx cheaper than a full rebuild (%.3f ms vs %.3f ms)\n", full / tu.p50,
                     tu.p50, full);
+    }
+    if(upd.style_selector && yu.p50 > 0.0)
+    {
+        std::printf("  a style update is %.1fx cheaper than a full rebuild (%.3f ms vs %.3f ms)\n", full / yu.p50,
+                    yu.p50, full);
     }
 
 #ifndef __ANDROID__
@@ -1028,6 +1203,417 @@ bool verify_incremental_layout(LhuContext* ctx)
     return g_failures == 0;
 }
 
+// --- correctness: lhu_set_style vs a full re-parse ----------------------------
+//
+// Same gate as lhu_set_text is held to, for the same reason: every quad carries
+// position, size, corner radii, clip rect, atlas UVs and colour, so a
+// byte-for-byte match against a parse of HTML that already contains the new
+// inline style is the only evidence worth having. A stale declaration left over
+// from the previous style, a descendant that never re-inherited, a render tree
+// whose shape no longer matches the computed display, and a cached quad run
+// replayed with last frame's colour all fail this and cannot fail it quietly.
+
+// Parse, display, restyle one element, lay out, record -- the exact sequence a
+// running UI performs. The record before the mutation matters: it is what leaves
+// the retained display list holding a frame that the colour-only cases would
+// otherwise be free to replay.
+Snapshot mutate_style_page(LhuContext* ctx, const std::string& html, float w, float h, const char* selector,
+                           const char* css, int32_t* out_changed)
+{
+    lhu_set_viewport(ctx, w, h);
+    lhu_load_html(ctx, html.c_str(), nullptr);
+    lhu_layout(ctx, w);
+
+    LhuFrame f {};
+    lhu_record(ctx, &f);
+
+    const int32_t changed = lhu_set_style(ctx, selector, css);
+    if(out_changed)
+    {
+        *out_changed = changed;
+    }
+
+    lhu_layout(ctx, w);
+    return capture(ctx);
+}
+
+void check_style_matches_reparse(LhuContext* ctx, const char* what, StylePage page, float w, float h,
+                                 const char* from, const char* to)
+{
+    const std::string html = page(from);
+    const std::string ref  = page(to);
+
+    // Warm the atlas with both variants first. Rasterizing a glyph can grow the
+    // atlas and move every UV; a snapshot taken across that boundary would differ
+    // for a reason that has nothing to do with the mutation.
+    render_page(ctx, html, w, h);
+    render_page(ctx, ref, w, h);
+
+    int32_t        changed = 0;
+    const Snapshot mutated = mutate_style_page(ctx, html, w, h, "#mark", to, &changed);
+    const Snapshot parsed  = render_page(ctx, ref, w, h);
+
+    const int diff = first_difference(mutated, parsed);
+
+    char detail[300];
+    std::snprintf(detail, sizeof(detail), "mutated %d quads / %.4fx%.4f   re-parsed %d quads / %.4fx%.4f%s",
+                  static_cast<int>(mutated.quads.size()), mutated.doc_w, mutated.doc_h,
+                  static_cast<int>(parsed.quads.size()), parsed.doc_w, parsed.doc_h,
+                  diff < 0 ? "   identical" : "");
+
+    if(diff >= 0)
+    {
+        char extra[96];
+        std::snprintf(extra, sizeof(extra), "   FIRST DIFF AT QUAD %d", diff);
+        std::strncat(detail, extra, sizeof(detail) - std::strlen(detail) - 1);
+    }
+
+    const bool ok = changed == 1 && diff < 0 && mutated.doc_w == parsed.doc_w && mutated.doc_h == parsed.doc_h;
+    check(ok, what, detail);
+}
+
+bool verify_style_updates(LhuContext* ctx)
+{
+    std::printf("\n=== correctness: lhu_set_style vs a full re-parse ===\n");
+
+    int32_t enabled = 0, cache_entries = 0;
+    lhu_exp_setstyle_stats(ctx, &enabled, nullptr, nullptr, &cache_entries);
+    std::printf("  LHU_EXP_SETSTYLE default for this process: %s (the checks below drive the toggle "
+                "explicitly where it matters)\n", enabled ? "on" : "off");
+    std::printf("  retained display list (E2): %s -- the colour-only cases below are only a real test "
+                "of it when this says on\n", lhu_quadcache_stat(ctx, LHU_QC_ENABLED) ? "on" : "off");
+    lhu_exp_setstyle_set_enabled(ctx, 1);
+
+    // Restored on the way out: leaving it on would make the timing section below
+    // report a set_style path in a run that was asked for LHU_EXP_SETSTYLE=0.
+    struct RestoreSetStyle
+    {
+        LhuContext* c;
+        int32_t     v;
+        ~RestoreSetStyle()
+        {
+            lhu_exp_setstyle_set_enabled(c, v);
+        }
+    } restore {ctx, enabled};
+
+    const char* kFlowBase = "font-size:15px;padding:4px 6px;background:#243050;color:#e8e8ef";
+
+    // 1. COLOUR ONLY. Not one of the fourteen floats the retained display list
+    //    diffs after layout moves here: same box, same padding, same borders,
+    //    same position. If lhu_set_style() did not mark the element dirty by
+    //    hand, the cache would replay the old colour and this is the check that
+    //    catches it -- which is why the sequence records a frame before mutating.
+    check_style_matches_reparse(ctx, "colour only (geometry unchanged)", page_style_flow, 420.f, 200.f, kFlowBase,
+                                "font-size:15px;padding:4px 6px;background:#e11d48;color:#101014");
+
+    // 2. A SIZE CHANGE THAT REFLOWS SIBLINGS.
+    check_style_matches_reparse(ctx, "size change reflows the siblings below", page_style_flow, 420.f, 200.f,
+                                kFlowBase, "font-size:27px;padding:19px 6px;background:#243050;color:#e8e8ef");
+
+    // 3. INHERITANCE. The marked element is the container; nothing about its own
+    //    box changes that a descendant could read back -- they have to re-inherit
+    //    and re-measure.
+    check_style_matches_reparse(ctx, "parent change inherited by descendants", page_style_inherit, 460.f, 300.f,
+                                "padding:6px;font-size:14px;color:#e8e8ef",
+                                "padding:6px;font-size:23px;color:#ffd166;line-height:2");
+    check_style_matches_reparse(ctx, "inherited white-space reaches text nodes", page_style_inherit, 460.f, 300.f,
+                                "padding:6px;font-size:14px;color:#e8e8ef",
+                                "padding:6px;font-size:14px;color:#e8e8ef;white-space:pre");
+
+    // 4/5. ADDING and REMOVING a property. Removing is the one that fails if the
+    //    declaration map is merged into rather than rebuilt: style::add() and
+    //    style::combine() have no way to express "and drop everything else".
+    check_style_matches_reparse(ctx, "adding a property", page_style_flow, 420.f, 200.f, kFlowBase,
+                                "font-size:15px;padding:4px 6px;background:#243050;color:#e8e8ef;"
+                                "border:3px solid #4af;border-radius:9px");
+    check_style_matches_reparse(ctx, "removing a property", page_style_flow, 420.f, 200.f,
+                                "font-size:15px;padding:4px 6px;background:#243050;color:#e8e8ef;"
+                                "border:3px solid #4af;border-radius:9px",
+                                kFlowBase);
+    check_style_matches_reparse(ctx, "removing the last property (background)", page_style_flow, 420.f, 200.f,
+                                kFlowBase, "font-size:15px;padding:4px 6px;color:#e8e8ef");
+
+    // 6. REPLACING WITH AN EMPTY STRING -- every declaration gone at once.
+    check_style_matches_reparse(ctx, "replacing with an empty style", page_style_flow, 420.f, 200.f, kFlowBase, "");
+
+    // 7. AN INVALID DECLARATION. The requirement is not that it be rejected, it
+    //    is that it be dropped in exactly the way the HTML parser drops it.
+    check_style_matches_reparse(ctx, "invalid declarations dropped like a parse", page_style_flow, 420.f, 200.f,
+                                kFlowBase,
+                                "font-size:15px;color:notacolour;wibble:42;padding:;background:#243050;;"
+                                "margin-top:9px");
+
+    // 8. DISPLAY. The render tree's shape was decided from the computed display
+    //    at parse time and document::render() never revisits it, so these are the
+    //    cases that have to rebuild it.
+    check_style_matches_reparse(ctx, "display block -> inline", page_style_flow, 420.f, 200.f, kFlowBase,
+                                "display:inline;font-size:15px;padding:4px 6px;background:#243050;color:#e8e8ef");
+    check_style_matches_reparse(ctx, "display block -> none", page_style_flow, 420.f, 200.f, kFlowBase,
+                                "display:none");
+    check_style_matches_reparse(ctx, "display none -> block", page_style_flow, 420.f, 200.f, "display:none",
+                                kFlowBase);
+    check_style_matches_reparse(ctx, "display block -> inline-block", page_style_flow, 420.f, 200.f, kFlowBase,
+                                "display:inline-block;font-size:15px;padding:4px 6px;background:#243050");
+    check_style_matches_reparse(ctx, "display block -> flex", page_style_inherit, 460.f, 300.f,
+                                "padding:6px;font-size:14px;color:#e8e8ef",
+                                "display:flex;padding:6px;font-size:14px;color:#e8e8ef");
+
+    {
+        int32_t trees_before = 0, trees_after = 0;
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, &trees_before, nullptr);
+        const std::string html = page_style_flow(kFlowBase);
+        int32_t           ch   = 0;
+        mutate_style_page(ctx, html, 420.f, 200.f, "#mark", "display:none", &ch);
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, &trees_after, nullptr);
+
+        int32_t trees_colour_before = 0, trees_colour_after = 0;
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, &trees_colour_before, nullptr);
+        mutate_style_page(ctx, html, 420.f, 200.f, "#mark",
+                          "font-size:15px;padding:4px 6px;background:#e11d48;color:#101014", &ch);
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, &trees_colour_after, nullptr);
+
+        char detail[180];
+        std::snprintf(detail, sizeof(detail), "display change rebuilt %d tree(s), colour change rebuilt %d",
+                      trees_after - trees_before, trees_colour_after - trees_colour_before);
+        check(trees_after - trees_before == 1 && trees_colour_after - trees_colour_before == 0,
+              "the render tree is rebuilt only when display moves", detail);
+    }
+
+    // 9/10. FLEX ITEM and TABLE CELL -- render-tree shapes that do not mirror the
+    //    DOM, and where the mutated element's size is an input to a layout
+    //    algorithm that moves boxes it has no DOM relationship with.
+    check_style_matches_reparse(ctx, "flex item, colour only", page_style_flex, 460.f, 160.f,
+                                "padding:4px 8px;background:#243050",
+                                "padding:4px 8px;background:#7c3aed;color:#fff");
+    check_style_matches_reparse(ctx, "flex item, size change", page_style_flex, 460.f, 160.f,
+                                "padding:4px 8px;background:#243050",
+                                "padding:16px 30px;background:#243050;font-size:21px");
+    check_style_matches_reparse(ctx, "flex item, flex-grow added", page_style_flex, 460.f, 160.f,
+                                "padding:4px 8px;background:#243050",
+                                "padding:4px 8px;background:#243050;flex:1 1 auto");
+    check_style_matches_reparse(ctx, "table cell, colour only", page_style_table, 520.f, 200.f,
+                                "padding:4px 9px;border:1px solid #333",
+                                "padding:4px 9px;border:1px solid #333;background:#e11d48;color:#fff");
+    check_style_matches_reparse(ctx, "table cell, resizes the column", page_style_table, 520.f, 200.f,
+                                "padding:4px 9px;border:1px solid #333",
+                                "padding:4px 27px;border:3px solid #e11;font-size:18px");
+
+    // --- the cascade has to survive the rebuild ------------------------------
+    //
+    // These are the cases that separate "the declaration map was rebuilt" from
+    // "the new declarations were merged on top of the old ones". Everything
+    // above this point uses pages with no stylesheet at all, where the two are
+    // indistinguishable.
+    check_style_matches_reparse(ctx, "inline overrides a matching rule", page_style_css, 440.f, 240.f, "",
+                                "background:#e11d48;padding:14px 7px");
+    check_style_matches_reparse(ctx, "dropping the inline lets the rule return", page_style_css, 440.f, 240.f,
+                                "background:#e11d48;padding:14px 7px", "");
+    check_style_matches_reparse(ctx, "inline replaced, rule value returns for the dropped half", page_style_css,
+                                440.f, 240.f, "background:#e11d48;padding:14px 7px;font-size:21px",
+                                "background:#7c3aed");
+    check_style_matches_reparse(ctx, "::before survives a restyle of its owner", page_style_css, 440.f, 240.f,
+                                "color:#ffffff", "color:#101014;background:#8ab4ff;padding:11px 7px");
+    check_style_matches_reparse(ctx, "descendant rules still apply after the parent moves", page_style_css, 440.f,
+                                240.f, "", "font-size:24px;line-height:1.9;color:#9ae6b4");
+    check_style_matches_reparse(ctx, "inline !important over a rule", page_style_css, 440.f, 240.f, "",
+                                "padding:19px 7px !important;background:#0b3d2e");
+    check_style_matches_reparse(ctx, "display change with a stylesheet in play", page_style_css, 440.f, 240.f, "",
+                                "display:inline-block;background:#e11d48");
+
+    // The same element restyled twice in a row without a re-parse in between:
+    // the second call has to rebuild from the rules again, not from whatever the
+    // first call left in the map.
+    {
+        const std::string html = page_style_css("");
+        const std::string ref  = page_style_css("background:#7c3aed");
+        render_page(ctx, html, 440.f, 240.f);
+        render_page(ctx, ref, 440.f, 240.f);
+
+        lhu_set_viewport(ctx, 440.f, 240.f);
+        lhu_load_html(ctx, html.c_str(), nullptr);
+        lhu_layout(ctx, 440.f);
+        LhuFrame f {};
+        lhu_record(ctx, &f);
+
+        lhu_set_style(ctx, "#mark", "background:#e11d48;padding:14px 7px;font-size:21px;border:4px dotted #0f0");
+        lhu_layout(ctx, 440.f);
+        lhu_record(ctx, &f);
+        lhu_set_style(ctx, "#mark", "background:#7c3aed");
+        lhu_layout(ctx, 440.f);
+        const Snapshot got = capture(ctx);
+
+        const Snapshot expected = render_page(ctx, ref, 440.f, 240.f);
+
+        char detail[220];
+        std::snprintf(detail, sizeof(detail), "%d quads / %.4fx%.4f vs re-parse %d / %.4fx%.4f%s",
+                      static_cast<int>(got.quads.size()), got.doc_w, got.doc_h,
+                      static_cast<int>(expected.quads.size()), expected.doc_w, expected.doc_h,
+                      same_frame(got, expected) ? "   identical" : "   DIFFERS");
+        check(same_frame(got, expected), "restyle twice with no re-parse between", detail);
+    }
+
+    // --- setting the same style must be a no-op, not a silent rebuild ---------
+    {
+        const std::string html = page_style_flow(kFlowBase);
+        const Snapshot    base = render_page(ctx, html, 420.f, 200.f);
+
+        int32_t        ch   = 0;
+        const Snapshot same = mutate_style_page(ctx, html, 420.f, 200.f, "#mark", kFlowBase, &ch);
+
+        char detail[160];
+        std::snprintf(detail, sizeof(detail), "returned %d, %d quads (baseline %d)", ch,
+                      static_cast<int>(same.quads.size()), static_cast<int>(base.quads.size()));
+        check(ch == 0 && first_difference(same, base) < 0, "identical style reports no change", detail);
+    }
+
+    // --- the fail-closed cases -----------------------------------------------
+    {
+        const std::string html = page_style_flow(kFlowBase);
+        const Snapshot    base = render_page(ctx, html, 420.f, 200.f);
+
+        const int32_t missing = lhu_set_style(ctx, "#does-not-exist", "color:#f00");
+        const int32_t empty   = lhu_set_style(ctx, "", "color:#f00");
+        const int32_t null_css = lhu_set_style(ctx, "#mark", nullptr);
+
+        lhu_layout(ctx, 420.f);
+        const Snapshot after = capture(ctx);
+
+        char detail[200];
+        std::snprintf(detail, sizeof(detail), "unmatched->%d, empty selector->%d, null css->%d, document still %d quads",
+                      missing, empty, null_css, static_cast<int>(after.quads.size()));
+        check(missing == 0 && empty == 0 && null_css == 0 && first_difference(after, base) < 0,
+              "rejected style mutations leave the document untouched", detail);
+    }
+
+    // --- the toggle ----------------------------------------------------------
+    {
+        const std::string html = page_style_flow(kFlowBase);
+        const Snapshot    base = render_page(ctx, html, 420.f, 200.f);
+
+        lhu_exp_setstyle_set_enabled(ctx, 0);
+        const int32_t off = lhu_set_style(ctx, "#mark", "background:#e11d48");
+        lhu_layout(ctx, 420.f);
+        const Snapshot after_off = capture(ctx);
+        lhu_exp_setstyle_set_enabled(ctx, 1);
+
+        const int32_t on = lhu_set_style(ctx, "#mark", "background:#e11d48");
+        lhu_layout(ctx, 420.f);
+        const Snapshot after_on = capture(ctx);
+
+        char detail[220];
+        std::snprintf(detail, sizeof(detail), "off->%d (%s), document unchanged: %s; on->%d, document changed: %s",
+                      off, lhu_last_error(ctx), first_difference(after_off, base) < 0 ? "yes" : "NO", on,
+                      first_difference(after_on, base) >= 0 ? "yes" : "NO");
+        check(off == 0 && first_difference(after_off, base) < 0 && on == 1 &&
+                  first_difference(after_on, base) >= 0,
+              "LHU_EXP_SETSTYLE=0 refuses the call and changes nothing", detail);
+    }
+
+    // --- E1: a style change must disarm the layout short-circuit -------------
+    //
+    // This is the interaction that renders a whole frame at the previous
+    // geometry if it is got wrong, and it is deliberately staged so that the
+    // short-circuit is ARMED at the moment lhu_set_style() is called: a text
+    // mutation that re-measures to exactly the size it already had leaves
+    // lhu_layout() believing the tree in front of it is the answer. A style
+    // change that moves geometry then has to take that belief away.
+    {
+        int32_t exp_before = 0;
+        lhu_exp_stats(ctx, &exp_before, nullptr, nullptr);
+        lhu_exp_set_enabled(ctx, 1);
+
+        const char*       kMoved = "font-size:27px;padding:19px 6px;background:#243050;color:#e8e8ef";
+        const std::string html   = page_style_flow(kFlowBase);
+        const std::string ref    = page_style_flow(kMoved);
+        render_page(ctx, html, 420.f, 200.f);
+        render_page(ctx, ref, 420.f, 200.f);
+
+        lhu_set_viewport(ctx, 420.f, 200.f);
+        lhu_load_html(ctx, html.c_str(), nullptr);
+        lhu_layout(ctx, 420.f);
+        LhuFrame f {};
+        lhu_record(ctx, &f);
+
+        // Arms the short-circuit: same text in, nothing measured differently.
+        lhu_set_text(ctx, "#mark", "Hareketli kutu");
+
+        int32_t s0 = 0, r0 = 0;
+        lhu_exp_stats(ctx, nullptr, &s0, &r0);
+        lhu_set_style(ctx, "#mark", kMoved);
+        lhu_layout(ctx, 420.f);
+        int32_t s1 = 0, r1 = 0;
+        lhu_exp_stats(ctx, nullptr, &s1, &r1);
+
+        const Snapshot got      = capture(ctx);
+        const Snapshot expected = render_page(ctx, ref, 420.f, 200.f);
+
+        char detail[220];
+        std::snprintf(detail, sizeof(detail), "layout skipped %d / rendered %d; %d quads h=%.4f vs re-parse %d h=%.4f%s",
+                      s1 - s0, r1 - r0, static_cast<int>(got.quads.size()), got.doc_h,
+                      static_cast<int>(expected.quads.size()), expected.doc_h,
+                      first_difference(got, expected) < 0 ? "   identical" : "   DIFFERS");
+        check(s1 - s0 == 0 && r1 - r0 == 1 && same_frame(got, expected),
+              "style change disarms an armed layout short-circuit", detail);
+
+        lhu_exp_set_enabled(ctx, exp_before);
+    }
+
+    // --- hundreds of mutations in a row, then back to where it started -------
+    //
+    // Drift is what a merge-instead-of-replace bug looks like once it is too
+    // small to see in one step: a declaration that lingers, a counter that keeps
+    // incrementing, a cache entry that never gets evicted. Restoring the original
+    // style has to restore the original frame exactly.
+    {
+        const std::string html     = page_style_flow(kFlowBase);
+        const Snapshot    baseline = render_page(ctx, html, 420.f, 200.f);
+
+        lhu_set_viewport(ctx, 420.f, 200.f);
+        lhu_load_html(ctx, html.c_str(), nullptr);
+        lhu_layout(ctx, 420.f);
+        LhuFrame f {};
+        lhu_record(ctx, &f);
+
+        int32_t applied = 0, entries_before = 0, entries_after = 0;
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, nullptr, &entries_before);
+
+        char buf[192];
+        for(int i = 0; i < 600; ++i)
+        {
+            // A different string every single iteration, which is the workload
+            // this call exists for and the one the inline-style parse memo is
+            // worst at. Values are kept small so the page does not run away.
+            std::snprintf(buf, sizeof(buf),
+                          "font-size:%dpx;padding:%dpx %dpx;background:rgb(%d,%d,%d);color:#e8e8ef;"
+                          "border-radius:%dpx",
+                          12 + i % 9, 2 + i % 7, 4 + i % 5, i % 251, (i * 3) % 251, (i * 7) % 251, i % 11);
+            if(lhu_set_style(ctx, "#mark", buf))
+            {
+                ++applied;
+            }
+            lhu_layout(ctx, 420.f);
+            lhu_record(ctx, &f);
+        }
+
+        lhu_set_style(ctx, "#mark", kFlowBase);
+        lhu_layout(ctx, 420.f);
+        const Snapshot restored = capture(ctx);
+        lhu_exp_setstyle_stats(ctx, nullptr, nullptr, nullptr, &entries_after);
+
+        char detail[240];
+        std::snprintf(detail, sizeof(detail),
+                      "%d of 600 applied; restored %d quads / %.4fx%.4f (baseline %d / %.4fx%.4f); "
+                      "inline-style memo %d -> %d entries",
+                      applied, static_cast<int>(restored.quads.size()), restored.doc_w, restored.doc_h,
+                      static_cast<int>(baseline.quads.size()), baseline.doc_w, baseline.doc_h, entries_before,
+                      entries_after);
+        check(applied == 600 && same_frame(restored, baseline), "600 unique styles then restore, no drift", detail);
+    }
+
+    std::printf("  %d check(s) failed in total\n", g_failures);
+    return g_failures == 0;
+}
+
 bool verify_text_updates(LhuContext* ctx)
 {
     std::printf("\n=== correctness: lhu_set_text vs a full re-parse ===\n");
@@ -1237,6 +1823,68 @@ bool verify_text_updates(LhuContext* ctx)
     return g_failures == 0;
 }
 
+// --- how much of lhu_set_style() is the recursion? ---------------------------
+//
+// Recomputing the mutated element's own styles is O(1). Recomputing its
+// descendants is not, and it is not optional either: inherited properties have
+// to reach them. What IS optional is re-running SELECTOR MATCHING over the
+// subtree, which is what litehtml's refresh_styles() does and what
+// LHU_SETSTYLE_DEEP=1 turns back on. This measures the difference where it can
+// actually be seen -- on the 150-row inventory page, mutating the container that
+// every one of the 150 rows hangs off, so one call drags ~450 elements with it.
+//
+// The same run is the answer to "does recursing cost more than it saves": the
+// self-only variant recomputes exactly the same computed values (the checks
+// above prove it byte for byte), so anything the recursion costs here is pure
+// loss on this workload.
+void bench_deep_subtree(LhuContext* ctx, int iterations)
+{
+    const bool  deep = std::getenv("LHU_SETSTYLE_DEEP") && std::strcmp(std::getenv("LHU_SETSTYLE_DEEP"), "0") != 0;
+    const float w = 480.f, h = 3000.f;
+
+    const std::string html = page_list(150);
+    lhu_set_viewport(ctx, w, h);
+    lhu_load_html(ctx, html.c_str(), nullptr);
+    lhu_layout(ctx, w);
+    LhuFrame f {};
+    lhu_record(ctx, &f);
+
+    std::vector<double> shallow_call, deep_call;
+    char                buf[192];
+
+    for(int i = 0; i < iterations; ++i)
+    {
+        // The row spans, deep in the tree -- one element, no descendants worth
+        // the name. This is the shape an animation actually mutates.
+        std::snprintf(buf, sizeof(buf), "font-size:14px;color:rgb(%d,%d,%d)", i % 251, (i * 3) % 251, (i * 7) % 251);
+        auto t0 = Clock::now();
+        lhu_set_style(ctx, "#mark", buf);
+        shallow_call.push_back(ms_since(t0));
+        lhu_layout(ctx, w);
+        lhu_record(ctx, &f);
+
+        // The container of all 150 rows: ~450 elements inherit from it.
+        std::snprintf(buf, sizeof(buf), "margin:10px;color:rgb(%d,%d,%d)", i % 251, (i * 3) % 251, (i * 7) % 251);
+        t0 = Clock::now();
+        lhu_set_style(ctx, "div", buf);
+        deep_call.push_back(ms_since(t0));
+        lhu_layout(ctx, w);
+        lhu_record(ctx, &f);
+    }
+
+    const Stats sc = Stats::from(shallow_call);
+    const Stats dc = Stats::from(deep_call);
+
+    std::printf("\n=== lhu_set_style cost by subtree size (150-row inventory, %d iterations) ===\n", iterations);
+    std::printf("  selector re-matching over the subtree: %s (LHU_SETSTYLE_DEEP)\n", deep ? "ON" : "off");
+    std::printf("  %-34s %8s %8s %8s %8s\n", "", "mean", "p50", "p95", "max");
+    std::printf("  %-34s %8.3f %8.3f %8.3f %8.3f\n", "leaf span (#mark, 1 element)", sc.mean, sc.p50, sc.p95, sc.max);
+    std::printf("  %-34s %8.3f %8.3f %8.3f %8.3f\n", "row container (~450 descendants)", dc.mean, dc.p50, dc.p95,
+                dc.max);
+    std::printf("  the deep subtree costs %.0fx the leaf; a full parse of this page is ~3.1 ms\n",
+                sc.p50 > 0 ? dc.p50 / sc.p50 : 0.0);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1309,16 +1957,23 @@ int main(int argc, char** argv)
     std::printf("(desktop numbers; mobile estimates are extrapolations and marked as such)\n");
 #endif
 
-    const bool ok = verify_text_updates(ctx) && verify_incremental_layout(ctx);
+    const bool ok = verify_text_updates(ctx) && verify_incremental_layout(ctx) && verify_style_updates(ctx);
 
     bench_page(ctx, "HUD overlay", page_hud(), 420.f, 120.f, iterations,
-               {"#hp", "HP 83 / 100", "HP 82 / 100", "HP 83 / 100 (zehirli)"});
+               {"#hp", "HP 83 / 100", "HP 82 / 100", "HP 83 / 100 (zehirli)", "#hp",
+                "font-size:22px;color:rgb(%d,%d,%d);padding-left:%dpx"});
     bench_page(ctx, "Settings menu", page_menu(), 680.f, 460.f, iterations,
-               {"#res", "1600x0900", "1440x0900", "1600 x 900"});
+               {"#res", "1600x0900", "1440x0900", "1600 x 900", "#res",
+                "padding:6px 8px;border-bottom:1px solid #232b45;text-align:right;"
+                "background:rgb(%d,%d,%d);margin-top:%dpx"});
     bench_page(ctx, "Inventory list, 40 rows", page_list(40), 480.f, 900.f, iterations,
-               {"#mark", "Esya 31", "Esya 41", "Esya 21 (yeni)"});
+               {"#mark", "Esya 31", "Esya 41", "Esya 21 (yeni)", "#mark",
+                "font-size:14px;color:rgb(%d,%d,%d);padding-left:%dpx"});
     bench_page(ctx, "Inventory list, 150 rows", page_list(150), 480.f, 3000.f, iterations / 2,
-               {"#mark", "Esya 66", "Esya 86", "Esya 76 (yeni)"});
+               {"#mark", "Esya 66", "Esya 86", "Esya 76 (yeni)", "#mark",
+                "font-size:14px;color:rgb(%d,%d,%d);padding-left:%dpx"});
+
+    bench_deep_subtree(ctx, iterations / 2);
 
     if(!ok)
     {

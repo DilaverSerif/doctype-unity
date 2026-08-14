@@ -88,7 +88,9 @@ const litehtml::style* litehtml::document_container::cached_inline_style(const c
         return it->second.get();
     }
 
-    if(m_inline_style_cache.size() >= kLhuInlineStyleCacheMax)
+    // LHU PATCH (experiment E7): a caller that knows this string is a one-shot turns
+    // insertion off. Missing here is not an error -- the caller parses directly.
+    if(!m_inline_style_memoize || m_inline_style_cache.size() >= kLhuInlineStyleCacheMax)
     {
         return nullptr;
     }

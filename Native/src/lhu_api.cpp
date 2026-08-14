@@ -74,12 +74,42 @@ struct LhuContext
     //              pointing at the wrong texels.
     int atlas_epoch = -1;
 
+    // --- inline style mutation state (experiment E7) -------------------------
+    //
+    // exp_setstyle       the runtime toggle; see lhu_exp_setstyle_set_enabled().
+    // stat_style_applied lhu_set_style() calls that actually restyled something.
+    // stat_style_trees   of those, the ones that had to rebuild the render tree
+    //                    because display/float/position moved under it.
+    // style_deep_refresh is a measurement knob, not a feature: it makes
+    // lhu_set_style() run litehtml's own recursive refresh_styles() over the
+    // whole subtree instead of the self-only variant, so the cost of the
+    // recursion can be A/B'd in one binary. Set LHU_SETSTYLE_DEEP=1 to enable.
+    // See lhu_api.h for what the difference actually is.
+    // style_memoize_inline is the other measurement knob: leaving it on makes
+    // lhu_set_style() feed every one-shot style string it parses into the E6
+    // inline-style memo, which is what happens if that interaction is not
+    // handled at all. Set LHU_SETSTYLE_MEMO=1 to measure the difference.
+    bool    exp_setstyle         = true;
+    bool    style_deep_refresh   = false;
+    bool    style_memoize_inline = false;
+    int32_t stat_style_applied = 0;
+    int32_t stat_style_trees   = 0;
+
     explicit LhuContext(const LhuHostCallbacks& host) :
         container(fonts, host),
         cache(container)
     {
         const char* env = std::getenv("LHU_EXP_SUBTREE");
         exp_subtree     = !(env && std::strcmp(env, "0") == 0);
+
+        const char* env_style = std::getenv("LHU_EXP_SETSTYLE");
+        exp_setstyle          = !(env_style && std::strcmp(env_style, "0") == 0);
+
+        const char* env_deep = std::getenv("LHU_SETSTYLE_DEEP");
+        style_deep_refresh   = env_deep && std::strcmp(env_deep, "0") != 0;
+
+        const char* env_memo = std::getenv("LHU_SETSTYLE_MEMO");
+        style_memoize_inline = env_memo && std::strcmp(env_memo, "0") != 0;
 
         cache.set_enabled(quadcache_enabled_by_env());
     }
@@ -147,6 +177,83 @@ void split_like_parser(litehtml::document_container& container, const char* utf8
         utf8, [&out](const char* word) { out.push_back(TextNodeSpec {std::string(word), false}); },
         [&out](const char* space) { out.push_back(TextNodeSpec {std::string(space), true}); });
 }
+
+// --- experiment E7: what a style change can move that layout cannot fix -------
+//
+// document::render() walks the render tree; it does not build it. The tree is
+// built once, in createFromString(), and every node's *class* was chosen from
+// the computed `display` of the element it wraps -- render_item_block,
+// render_item_inline, render_item_flex, render_item_table, or no node at all for
+// display:none. render_item::init() then reads the same values again to split
+// inlines around block children, wrap loose inlines in anonymous boxes and build
+// the table boxes.
+//
+// So a style change that moves an element between those categories invalidates
+// the *shape* of the render tree, and no amount of re-rendering will notice:
+// litehtml re-lays-out the tree it has. That is the one class of inline-style
+// change lhu_set_style() cannot serve by recomputing styles alone, and this
+// fingerprint is how it is detected -- taken over the mutated element and every
+// descendant, because `display: inherit` and a font-size-driven change can move
+// one of them without moving the element itself.
+//
+// `float` and `position` are in the key for safety rather than from a proven
+// failure: fetch_positioned() is re-run on every render and floats are resolved
+// during rendering, so both are believed to be handled without a rebuild. They
+// cost one byte of the key each and a wrong guess there would be a silent
+// mislayout, which is not a trade worth taking.
+// The node's identity travels with the key. Restyling is not supposed to touch the
+// DOM at all, but one path does: el_before_after_base::add_style() re-reads `content`
+// and REPLACES the pseudo element's children with new nodes, so re-applying a
+// ::before selector detaches the generated content from the render items that lay it
+// out. refresh_styles_self() avoids that path entirely; the pointer is here so that
+// if anything ever takes it -- LHU_SETSTYLE_DEEP=1 does, by design -- the mismatch is
+// caught and answered with a render-tree rebuild instead of a stale frame.
+//
+// The snapshot holds a strong reference, not a bare address. If it held an address, a
+// node destroyed by the restyle could be replaced by a new node that the allocator
+// happened to put at the same address, and the comparison would call a rebuilt subtree
+// unchanged. Keeping the old nodes alive until both vectors have been compared makes
+// pointer equality mean what it reads as. One refcount per element in the subtree,
+// against a compute_styles() over the same subtree.
+struct StructuralKey
+{
+    litehtml::element::ptr node;
+    uint32_t               key = 0;
+
+    bool operator!=(const StructuralKey& o) const
+    {
+        return node != o.node || key != o.key;
+    }
+};
+
+void collect_structure(const litehtml::element::ptr& el, std::vector<StructuralKey>& out)
+{
+    const litehtml::css_properties& c = el->css();
+    out.push_back(StructuralKey {el, static_cast<uint32_t>(c.get_display()) |
+                                         (static_cast<uint32_t>(c.get_float()) << 8) |
+                                         (static_cast<uint32_t>(c.get_position()) << 16)});
+    for(const auto& child : el->children())
+    {
+        collect_structure(child, out);
+    }
+}
+
+bool structure_changed(const std::vector<StructuralKey>& a, const std::vector<StructuralKey>& b)
+{
+    if(a.size() != b.size())
+    {
+        return true;
+    }
+    for(size_t i = 0; i < a.size(); ++i)
+    {
+        if(a[i] != b[i])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 extern "C" {
@@ -516,6 +623,160 @@ int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8)
     // catch them anyway; mark explicitly rather than lean on that, because the
     // *old* items' entries are what would otherwise be replayed for the parent.
     ctx->cache.mark_element_dirty(el.get());
+
+    return 1;
+}
+
+int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css)
+{
+    if(!ctx || !ctx->doc || !selector || !css)
+    {
+        return 0;
+    }
+
+    if(!ctx->exp_setstyle)
+    {
+        // Off means off, not "quietly do it anyway". A host A/B-ing this on the
+        // phone needs the 0 to fall back to lhu_load_html(), which is the thing
+        // being measured against.
+        ctx->last_error = "set_style: disabled (LHU_EXP_SETSTYLE=0)";
+        return 0;
+    }
+
+    const litehtml::element::ptr root = ctx->doc->root();
+    if(!root)
+    {
+        ctx->last_error = "set_style: no document";
+        return 0;
+    }
+
+    const litehtml::element::ptr el = root->select_one(std::string(selector));
+    if(!el)
+    {
+        ctx->last_error = std::string("set_style: no element matched '") + selector + "'";
+        return 0;
+    }
+
+    // select_one() can only return something a selector matched, and a text node
+    // never matches one -- but el_text is an element too, and it has no m_style
+    // to rebuild, so prove the cast rather than assume it.
+    auto* tag = dynamic_cast<litehtml::html_tag*>(el.get());
+    if(!tag)
+    {
+        ctx->last_error = std::string("set_style: '") + selector + "' is not a styleable element";
+        return 0;
+    }
+
+    // Same string in, nothing to do. Worth the strcmp: the whole point of this
+    // call is to be used every frame, and a UI that pushes an unchanged style is
+    // common enough (a bar that stopped moving) that making it pay for a restyle
+    // and a forced render would be the worst possible trade. Reported as 0 the
+    // same way lhu_set_text() reports unchanged text.
+    const char* current = el->get_attr("style");
+    if(current ? std::strcmp(current, css) == 0 : css[0] == '\0')
+    {
+        ctx->last_error.clear();
+        return 0;
+    }
+
+    std::vector<StructuralKey> before;
+    collect_structure(el, before);
+
+    el->set_attr("style", css);
+
+    // The two halves of "replace the inline style".
+    //
+    // m_style is NOT the inline block -- it is the element's whole declaration
+    // map, the matched selectors' declarations with the style="" block folded on
+    // top by compute_styles(). style::add() and style::combine() MERGE, so
+    // calling compute_styles() again on its own would layer the new declarations
+    // over the old ones and every property the previous frame set but this one
+    // does not would survive. Fading a bar out by dropping `background` would
+    // leave the old background in place forever.
+    //
+    // So the map has to be emptied and rebuilt from the selectors first, which is
+    // exactly what refresh_styles() does -- and is why this is the same pair
+    // (refresh, then compute) that element::find_styles_changes() uses when a
+    // :hover changes which rules apply. The only difference is the recursion:
+    // refresh_styles() re-runs selector matching over the whole subtree, and an
+    // inline style edit cannot change which selectors match anything, so the
+    // self-only variant is used and the descendants pay only for compute_styles.
+    //
+    // compute_styles() must still be recursive. Half of CSS inherits -- color,
+    // font, line-height, white-space -- and a descendant's m_css is computed from
+    // its parent's, so changing font-size on a container has to reach every text
+    // node under it or they keep measuring at the old size. el_text's
+    // compute_styles() re-measures from the parent's font, which is what makes
+    // the inherited case come out byte-identical to a re-parse.
+    {
+        // Scoped so that a throw out of compute_styles() cannot leave the memo
+        // switched off for every document this context loads afterwards.
+        struct MemoGuard
+        {
+            litehtml::document_container* c;
+            bool                          prev;
+            ~MemoGuard()
+            {
+                c->set_inline_style_memoize(prev);
+            }
+        } guard {&ctx->container, ctx->container.inline_style_memoize()};
+
+        ctx->container.set_inline_style_memoize(ctx->style_memoize_inline);
+
+        if(ctx->style_deep_refresh)
+        {
+            tag->refresh_styles();
+        } else
+        {
+            tag->refresh_styles_self();
+        }
+        tag->compute_styles(true);
+    }
+
+    ctx->last_error.clear();
+    ++ctx->stat_style_applied;
+
+    std::vector<StructuralKey> after;
+    collect_structure(el, after);
+
+    if(structure_changed(before, after))
+    {
+        // See structural_key(): the render tree's shape came from these values
+        // and document::render() will not revisit it. Rebuilding is still far
+        // cheaper than re-parsing the HTML, but every render_item address in the
+        // document has just changed, and the quad cache keys its entries on those
+        // addresses -- so it has to be told, with the same call a new document
+        // would trigger.
+        ctx->doc->rebuild_render_tree();
+        ctx->cache.on_document_replaced();
+        ++ctx->stat_style_trees;
+    } else
+    {
+        // E2, and the same trap lhu_set_text() documents. The cache decides what
+        // to replay from a post-layout diff of fourteen floats per render item;
+        // a style change that only altered a COLOUR moves none of them, so the
+        // walk finds nothing and the stale colour is replayed forever. Marking
+        // here is unconditional on "did anything move", because the case that
+        // needs it is precisely the case where nothing did.
+        //
+        // Marking the element sets dc_force_subtree, which covers the inherited
+        // change reaching descendants; the walk propagates a dirty child up to
+        // its ancestors, which covers the one non-geometric way a change here can
+        // repaint something above it (html_tag::get_background() lets the root
+        // draw the body's background).
+        ctx->cache.mark_element_dirty(el.get());
+    }
+
+    // E1, and the reason this is a plain invalidate rather than lhu_set_text()'s
+    // careful "did the measurement move" test. A text node contributes exactly
+    // one thing to layout, its measured size, so set_text can compare it and
+    // prove nothing moved. A style declaration can change width, padding, margin,
+    // border, font, flex-basis, writing direction -- there is no small set of
+    // numbers to compare, and getting the set wrong renders a frame at the
+    // previous geometry. Layout on the page this exists for measures 0.07 ms
+    // against 3.45 ms of parsing, so buying a provable answer with a full render
+    // is not even a close call.
+    ctx->invalidate_layout();
 
     return 1;
 }
@@ -937,6 +1198,35 @@ void lhu_exp_set_enabled(LhuContext* ctx, int32_t enabled)
     if(!ctx->exp_subtree)
     {
         ctx->pending_mutation = false;
+    }
+}
+
+void lhu_exp_setstyle_set_enabled(LhuContext* ctx, int32_t enabled)
+{
+    if(ctx)
+    {
+        ctx->exp_setstyle = enabled != 0;
+    }
+}
+
+void lhu_exp_setstyle_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_applied, int32_t* out_tree_rebuilds,
+                            int32_t* out_style_cache_entries)
+{
+    if(out_enabled)
+    {
+        *out_enabled = ctx && ctx->exp_setstyle ? 1 : 0;
+    }
+    if(out_applied)
+    {
+        *out_applied = ctx ? ctx->stat_style_applied : 0;
+    }
+    if(out_tree_rebuilds)
+    {
+        *out_tree_rebuilds = ctx ? ctx->stat_style_trees : 0;
+    }
+    if(out_style_cache_entries)
+    {
+        *out_style_cache_entries = ctx ? static_cast<int32_t>(ctx->container.inline_style_cache_size()) : 0;
     }
 }
 

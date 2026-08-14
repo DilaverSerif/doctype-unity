@@ -890,14 +890,38 @@ namespace litehtml
             // so rebuild it here to add/remove render items for elements whose display
             // just changed; otherwise a newly-shown element keeps no render item and
             // never lays out (it collapses to zero).
-            m_root_render = m_root->create_render_item(nullptr);
-            if(m_root_render)
-            {
-                m_root_render = m_root_render->init();
-            }
+            rebuild_render_tree();
             return true;
         }
         return false;
+    }
+
+    // LHU PATCH (experiment E7). Exactly what createFromString() does after compute_styles():
+    // build the tree, let fix_tables_layout() insert the anonymous table boxes a bare
+    // create_render_item() cannot know about, then init(). m_tabular_elements is an
+    // accumulate-only list fed by create_render_item(), so it has to be emptied first or the
+    // second rebuild would re-fix the boxes of a tree that no longer exists.
+    //
+    // Every render_item in the old tree is destroyed here, so any caller holding pointers into
+    // it (the LiteHtmlUnity quad cache does) must throw them away.
+    void document::rebuild_render_tree()
+    {
+        if(!m_root)
+        {
+            return;
+        }
+
+        m_tabular_elements.clear();
+        m_fixed_boxes.clear();
+
+        m_root_render = m_root->create_render_item(nullptr);
+
+        fix_tables_layout();
+
+        if(m_root_render)
+        {
+            m_root_render = m_root_render->init();
+        }
     }
 
     bool document::lang_changed()

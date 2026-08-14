@@ -114,6 +114,29 @@ namespace litehtml
         // cache is full, in which case the caller must fall back to parsing directly.
         const style* cached_inline_style(const char* text);
 
+        // LHU PATCH (experiment E7). The memo above assumes what a *parse* looks like: a
+        // handful of distinct style strings shared by hundreds of elements. lhu_set_style()
+        // inverts that -- an animation writes a string no element will ever carry again, once
+        // per frame. Inserting those is not just wasted work (a std::string key, a style
+        // object and a map node per frame); it fills the 1024-entry cap with garbage, after
+        // which a genuinely repeated string that appears later can never be memoized at all.
+        //
+        // Lookups stay on: the descendants whose styles get recomputed alongside the mutated
+        // element DO carry repeated strings, and those are exactly what the memo is for. Only
+        // insertion is suppressed, so this changes speed and memory and never a value.
+        void set_inline_style_memoize(bool on)
+        {
+            m_inline_style_memoize = on;
+        }
+        bool inline_style_memoize() const
+        {
+            return m_inline_style_memoize;
+        }
+        size_t inline_style_cache_size() const
+        {
+            return m_inline_style_cache.size();
+        }
+
       protected:
         virtual ~document_container() = default;
 
@@ -123,6 +146,9 @@ namespace litehtml
         // per LhuContext, which is documented single-threaded; a process-global cache would
         // be shared between containers with different resolve_color() behaviour and is wrong.
         std::map<std::string, std::shared_ptr<style>, std::less<>> m_inline_style_cache;
+
+        // LHU PATCH (experiment E7): see set_inline_style_memoize().
+        bool m_inline_style_memoize = true;
     };
 } // namespace litehtml
 
