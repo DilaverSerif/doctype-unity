@@ -16,10 +16,11 @@ namespace LiteHtmlUnity
     /// <summary>What a drag is touching, in the document's own terms.</summary>
     public readonly struct LiteHtmlDrag
     {
-        public LiteHtmlDrag(string elementId, Vector2 documentPoint)
+        public LiteHtmlDrag(string elementId, Vector2 documentPoint, Vector2 screenPosition)
         {
             ElementId = elementId;
             DocumentPoint = documentPoint;
+            ScreenPosition = screenPosition;
         }
 
         /// <summary>Id of the element under the pointer, or null over bare page.</summary>
@@ -27,6 +28,13 @@ namespace LiteHtmlUnity
 
         /// <summary>Pointer position in CSS pixels.</summary>
         public Vector2 DocumentPoint { get; }
+
+        /// <summary>
+        /// Pointer position in screen pixels, for placing something that has to
+        /// follow the finger outside the page — a dragged icon cannot leave the
+        /// surface the document is clipped to, so it has to be its own object.
+        /// </summary>
+        public Vector2 ScreenPosition { get; }
     }
 
     [RequireComponent(typeof(RawImage))]
@@ -286,7 +294,7 @@ namespace LiteHtmlUnity
             // ElementAt is a pure query, so probing a drop target mid-drag does
             // not light it up as hovered.
             return TryGetDocumentPoint(eventData, out Vector2 p)
-                ? new LiteHtmlDrag(_view != null ? _view.ElementAt(p) : null, p)
+                ? new LiteHtmlDrag(_view != null ? _view.ElementAt(p) : null, p, eventData.position)
                 : default;
         }
 

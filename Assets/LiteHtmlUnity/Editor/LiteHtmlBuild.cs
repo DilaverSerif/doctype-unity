@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -24,24 +25,43 @@ namespace LiteHtmlUnity.EditorTools
     public static class LiteHtmlBuild
     {
         const string DemoScene = "Assets/LiteHtmlUnity/Samples/LiteHtmlDemo.unity";
+        const string InventoryScene = "Assets/LiteHtmlUnity/Samples/LiteHtmlInventoryDemo.unity";
         const string OutputDir = "Native/build/out";
+
+        /// <summary>
+        /// The portrait drag-and-drop inventory, as its own package so it can sit
+        /// on a device next to the main demo rather than replacing it.
+        /// </summary>
+        public static void AndroidInventory()
+        {
+            Build(InventoryScene, "com.dopaminefact.litehtmlinventory", "LiteHtml Inventory",
+                  "litehtml-inventory.apk", UIOrientation.Portrait);
+        }
 
         public static void Android()
         {
-            string scene = ResolveScene();
-            string apk = Path.GetFullPath(Path.Combine(Application.dataPath, "..", OutputDir, "litehtml-demo.apk"));
+            Build(ResolveScene(), "com.dopaminefact.litehtmldemo", "LiteHtml Demo",
+                  "litehtml-demo.apk", UIOrientation.AutoRotation);
+        }
+
+        static void Build(string scene, string bundleId, string product, string apkName,
+                          UIOrientation orientation)
+        {
+            string apk = Path.GetFullPath(Path.Combine(Application.dataPath, "..", OutputDir, apkName));
             Directory.CreateDirectory(Path.GetDirectoryName(apk));
 
             // Assert rather than assume: an empty .meta leaves the native plugin
             // out of the player and the failure only appears on a device.
+            AssertPluginIsCurrent();
             LiteHtmlPluginSettings.ConfigureAll();
             LiteHtmlPluginSettings.EnsureShadersIncluded();
 
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel24;
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
-            PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Android, "com.dopaminefact.litehtmldemo");
-            PlayerSettings.productName = "LiteHtml Demo";
+            PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Android, bundleId);
+            PlayerSettings.productName = product;
+            PlayerSettings.defaultInterfaceOrientation = orientation;
 
             // The demo drives its own frame rate; leaving vsync on would hide
             // what the CPU numbers on the overview page are actually saying.
@@ -71,6 +91,51 @@ namespace LiteHtmlUnity.EditorTools
 
             Debug.Log($"[LiteHtml] built {apk} ({summary.totalSize / 1048576f:0.0} MB) " +
                       $"in {summary.totalTime.TotalSeconds:0} s");
+        }
+
+        /// <summary>
+        /// Refuses to build against a native plugin older than the sources it
+        /// was compiled from.
+        /// </summary>
+        /// <remarks>
+        /// Nothing rebuilds the .so as part of a player build, so adding a
+        /// native entry point and then building an APK ships a library without
+        /// it. That surfaces as EntryPointNotFoundException at the call site,
+        /// which — if the call is inside a UI event — swallows the rest of the
+        /// event and looks like the interaction is broken rather than the
+        /// library being stale.
+        /// </remarks>
+        static void AssertPluginIsCurrent()
+        {
+            string root = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            string plugin = Path.Combine(root, "Assets/LiteHtmlUnity/Plugins/Android/libs/arm64-v8a/libLiteHtmlUnity.so");
+
+            if (!File.Exists(plugin))
+            {
+                throw new Exception("[LiteHtml] Android plugin missing. Run Native/build_android.sh arm64-v8a");
+            }
+
+            DateTime built = File.GetLastWriteTimeUtc(plugin);
+            var sources = new List<string>();
+
+            foreach (string dir in new[] { "Native/src", "Native/third_party/litehtml/src",
+                                           "Native/third_party/litehtml/include" })
+            {
+                string full = Path.Combine(root, dir);
+                if (Directory.Exists(full))
+                {
+                    sources.AddRange(Directory.GetFiles(full, "*.*", SearchOption.AllDirectories));
+                }
+            }
+
+            foreach (string file in sources)
+            {
+                if (File.GetLastWriteTimeUtc(file) > built)
+                {
+                    throw new Exception($"[LiteHtml] {Path.GetFileName(file)} is newer than the Android plugin. " +
+                                        "Run Native/build_android.sh arm64-v8a first.");
+                }
+            }
         }
 
         /// <summary>
