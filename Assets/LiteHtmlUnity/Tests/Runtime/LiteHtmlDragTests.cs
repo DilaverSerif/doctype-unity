@@ -145,5 +145,30 @@ namespace LiteHtmlUnity.Tests
             Assert.AreEqual(picked, dropped, "and the drop should report where it ended");
             Assert.AreEqual(before, RowY("#r5"), 0.5f, "a claimed drag must not scroll the page");
         }
+
+        /// <summary>
+        /// Assigning Resources before the view has built its document must not
+        /// lose it. Awake runs before OnEnable, so this is the ordinary case, and
+        /// getting it wrong shows up only as images laid out at zero size.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator ResourcesSetBeforeInitialiseSurvive()
+        {
+            var go = new GameObject("Pending", typeof(RectTransform));
+            go.SetActive(false);
+            LiteHtmlView view = go.AddComponent<LiteHtmlView>();
+
+            var provider = new GameObject("Res").AddComponent<LiteHtmlResources>();
+            view.Resources = provider;          // document does not exist yet
+            Assert.AreSame(provider, view.Resources, "the view should hold on to it");
+
+            go.SetActive(true);                 // OnEnable builds the document
+            yield return Settle();
+
+            Assert.AreSame(provider, view.Resources, "and hand it to the document once there is one");
+
+            Object.DestroyImmediate(provider.gameObject);
+            Object.DestroyImmediate(go);
+        }
     }
 }

@@ -149,15 +149,23 @@ namespace LiteHtmlUnity
 
         public ILiteHtmlResourceProvider Resources
         {
-            get => _document?.Resources;
+            get => _document != null ? _document.Resources : _pendingResources;
             set
             {
+                // Remembered rather than dropped: the document is not built until
+                // OnEnable, and callers normally wire this up from Awake, which
+                // runs first. Silently discarding it there produced a page that
+                // laid images out at zero size with no error anywhere.
+                _pendingResources = value;
+
                 if (_document != null)
                 {
                     _document.Resources = value;
                 }
             }
         }
+
+        private ILiteHtmlResourceProvider _pendingResources;
 
         private void OnEnable()
         {
@@ -186,6 +194,11 @@ namespace LiteHtmlUnity
             try
             {
                 _document = new LiteHtmlDocument();
+
+                if (_pendingResources != null)
+                {
+                    _document.Resources = _pendingResources;
+                }
             }
             catch (Exception e)
             {
