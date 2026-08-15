@@ -2,7 +2,7 @@
 
 HTML and CSS as a game UI for Unity, laid out by
 [litehtml](https://github.com/litehtml/litehtml) and drawn entirely on the GPU.
-No embedded browser, no CPU rasterizer, no per-platform web view — one mesh, one
+No embedded browser, no CPU rasterizer, no per-platform web view. One mesh, one
 draw call, and it compiles everywhere Unity does, iOS and Android included.
 
 <p align="center">
@@ -26,7 +26,7 @@ This project is the other half of that interface. It turns those calls into a
 flat stream of quads with the shape parameters baked into their vertices, hands
 the whole page to the GPU as one mesh, and reconstructs rounded corners, borders,
 gradients and glyph coverage analytically in a fragment shader. What comes out is
-a `RenderTexture` you can put anywhere Unity accepts one — a `RawImage`, a
+a `RenderTexture` you can put anywhere Unity accepts one: a `RawImage`, a
 world-space quad, a material slot on a monitor prop.
 
 ## What works
@@ -36,7 +36,7 @@ world-space quad, a material slot on a monitor prop.
   border radius, linear/radial/conic gradients, images, web-safe and embedded
   fonts.
 - **Interaction.** `:hover` and `:active`, anchor clicks, element clicks by id,
-  scrolling, and dragging — including dragging an item **from one surface onto
+  scrolling, and dragging, including dragging an item **from one surface onto
   another**, which is what lets a HUD be several independent panels instead of
   one screen-sized sheet.
 - **Mutation without re-parsing.** `SetText` and `SetStyle` change a text node or
@@ -47,7 +47,7 @@ world-space quad, a material slot on a monitor prop.
   game, with a premultiplied-alpha material and touch pass-through so the parts
   it does not paint are not a sheet of glass over the game.
 - **Platforms.** macOS, Android (arm64), iOS. Editor and player, built-in
-  pipeline / URP / HDRP — the renderer issues its own `CommandBuffer` against an
+  pipeline / URP / HDRP. The renderer issues its own `CommandBuffer` against an
   explicit target, so it does not care.
 
 ## How it fits together
@@ -106,15 +106,15 @@ covers fonts, resources, HUD layout and the input model in more depth.
 
 This is the part that shaped the design, so it gets the space.
 
-Everything below was measured on a **Xiaomi 22101316I at 1080×2400** — a budget
-Android phone, deliberately — with a spinning-cube load running underneath, 300
+Everything below was measured on a **Xiaomi 22101316I at 1080×2400** (a budget
+Android phone, deliberately) with a spinning-cube load running underneath, 300
 frames per scenario, Vulkan, frame pacing off, GPU times from
 `FrameTimingManager`. The harness is in the repo
 ([`HtmlBenchmark.cs`](Assets/Doctype/Samples/HtmlBenchmark.cs));
 build it with `Tools/Doctype/Build Benchmark APK` and it writes a CSV to the
 device.
 
-Each panel is a quarter of the screen holding a scrollable list — 383 quads, the
+Each panel is a quarter of the screen holding a scrollable list: 383 quads, the
 size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
@@ -132,7 +132,7 @@ size of a real HUD panel.
 ### A HUD that is not changing is free
 
 Zero CPU, zero bytes uploaded, and 0.4 ms of GPU for four panels and 1524 quads.
-That is not a rounding artifact — the view skips layout, recording, mesh build
+That is not a rounding artifact: the view skips layout, recording, mesh build
 and draw entirely when nothing has invalidated it, so an idle page costs one
 `if`. For UI that updates a few times a second, the work is already done.
 
@@ -148,7 +148,7 @@ to read correctly:
 | full resolution | 383 | 224 KB | 1× | 21.09 ms |
 | half resolution | **383** | **224 KB** | **¼** | **8.14 ms** |
 
-Same document, same quad count, the same 224 KB uploaded — only the pixel count
+Same document, same quad count, the same 224 KB uploaded. Only the pixel count
 changed, and the cost fell by 3.3×. So the GPU time is fill and overdraw: the
 page paints its panel background, then a rectangle per row, then a border, then
 the glyphs, and every one of those fragments is shaded by an SDF shader with an
@@ -156,14 +156,14 @@ antialiasing skirt.
 
 The numbers above already include one consequence of that reading: the exact
 sRGB transfer function used to run per fragment, ahead of every branch, on a
-colour the mesh writes once per quad. Moving it to the vertex stage — identical
-output, four corners carrying one value interpolate to that value — took a
+colour the mesh writes once per quad. Moving it to the vertex stage (identical
+output, since four corners carrying one value interpolate to that value) took a
 consistent **14% off every redraw scenario** (24.4 → 21.1 ms on one panel,
 36.3 → 31.8 on four). One `pow` per channel, measured at three milliseconds a
 frame on this phone.
 
 Two things follow. The 3.6 MB of vertex data a four-panel HUD re-uploads every
-frame is **not** the bottleneck — it costs CPU time (~3 ms of mesh building) and
+frame is **not** the bottleneck: it costs CPU time (~3 ms of mesh building) and
 nothing measurable on the GPU. And `RenderScale`, which exists on
 `HtmlRawImage`, turns out to be a shipping-grade optimisation and not just a
 measurement knob: half resolution, 3.5× cheaper, softer text.
@@ -171,7 +171,7 @@ measurement knob: half resolution, 3.5× cheaper, softer text.
 ### Re-parsing is the expensive thing, so don't
 
 Rebuilding a document from a string costs 12.5 ms, of which **10.9 ms is
-parsing** — and most of that is litehtml re-parsing its own default stylesheet,
+parsing**, and most of that is litehtml re-parsing its own default stylesheet,
 a fixed price per document regardless of page size. Two things take it off the
 table: a trimmed master stylesheet for game UI (~2.4× faster document creation),
 and a check that skips the parse entirely when the markup is byte-identical to
@@ -188,7 +188,7 @@ argument for having a benchmark at all.
 
 **`vw`/`vh` were frozen at parse time.** litehtml resolves viewport units when it
 *computes* styles, against a media snapshot taken once. A host sets the viewport
-after loading the page — the surface only learns its size a frame later — so
+after loading the page, because the surface only learns its size a frame later, so
 every viewport-relative length answered for a size the page was never displayed
 at. A 4-column grid silently wrapped to 3.
 
@@ -200,7 +200,7 @@ already does it when a media query genuinely flips.
 
 **Transparent meant white.** The surface composites with `Blend One
 OneMinusSrcAlpha`, so colours must be premultiplied. The default clear was
-`(1,1,1,0)` — white at zero alpha, which is not a valid premultiplied value and
+`(1,1,1,0)`: white at zero alpha, which is not a valid premultiplied value and
 adds white to everything behind wherever the page paints nothing. Invisible until
 the first page with a genuinely empty region.
 
@@ -219,7 +219,7 @@ three reported clean numbers for work that never happened.
 
 **The benchmark's panels were slivers.** Their parent `RectTransform` was left at
 its default zero size, so four "quarter-screen" panels became four slivers around
-the canvas centre — and every number was about a HUD nobody would ship.
+the canvas centre, and every number was about a HUD nobody would ship.
 
 **The frame-time column was lying twice.** Unity paces frames to a whole divisor
 of the refresh rate, so a run that misses 16.7 ms once locks to 30 fps and every
@@ -257,10 +257,10 @@ cost from document size.
 
 ## Licence and credits
 
-This project is MIT licensed — see [LICENSE](LICENSE).
+This project is MIT licensed, see [LICENSE](LICENSE).
 
 It vendors patched copies of third-party code under `Native/third_party/`, each
-under its own licence — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md):
+under its own licence, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md):
 
 | | | |
 |---|---|---|
@@ -268,7 +268,7 @@ under its own licence — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md):
 | gumbo | Apache-2.0 | HTML5 parser, bundled with litehtml |
 | stb_truetype | public domain | glyph rasterization |
 
-litehtml is pinned and carries local patches — performance fixes, a text-mutation
+litehtml is pinned and carries local patches: performance fixes, a text-mutation
 entry point, and hooks the retained quad cache needs. Every patch is marked
 `LHU PATCH` in the source and explained where it sits;
 [`Native/third_party/VENDORING.md`](Native/third_party/VENDORING.md) says how to

@@ -2,7 +2,7 @@
 
 HTML/CSS arayüzleri Unity'de **GPU'da** render eden bir sistem. Layout'u
 [litehtml](https://github.com/litehtml/litehtml) yapıyor, çizimin tamamını Unity
-üstleniyor — arada CPU rasterizer yok.
+üstleniyor, arada CPU rasterizer yok.
 
 Ultralight/CEF gibi çözümlerden farkı: gömülü bir tarayıcı yok. litehtml saf C++
 ve **hiçbir şey çizmiyor**; `document_container` arayüzü üzerinden "şu dikdörtgeni
@@ -64,7 +64,7 @@ ama tek bir `min` işlemi.
 ```
 
 Universal (arm64 + x86_64) `.bundle` üretip
-`Assets/Doctype/Plugins/macOS/` altına koyar. Tek gereksinim Xcode —
+`Assets/Doctype/Plugins/macOS/` altına koyar. Tek gereksinim Xcode,
 CMake gerekmiyor.
 
 ### Android (kod hazır, bu makinede derlenmedi)
@@ -75,7 +75,7 @@ CMake gerekmiyor.
 
 Gereksinimler: Android NDK, `cmake` + `ninja`, ve Unity'nin Android Build
 Support modülü. **Bu makinede üçü de kurulu değil**, dolayısıyla Android yolu
-yazıldı ama çalıştırılmadı — ilk derlemeyi doğrulanmamış kabul edin.
+yazıldı ama çalıştırılmadı; ilk derlemeyi doğrulanmamış kabul edin.
 
 ### iOS
 
@@ -121,7 +121,7 @@ Empty Areas` açıkken **yalnızca `id`'si olan elemanlar** dokunuşu yakalar; b
 sayfaya düşen dokunuş arkadaki oyuna geçer. Dekoratif sarmalayıcılara `id`
 vermeyin, tıklanabilir kutulara verin.
 
-Şeffaf sayfa için `Background` **(0,0,0,0)** olmalı — yüzey `Blend One
+Şeffaf sayfa için `Background` **(0,0,0,0)** olmalı, çünkü yüzey `Blend One
 OneMinusSrcAlpha` ile birleşiyor, yani renk kendi alfasıyla çarpılmış olmalı.
 Alfası sıfır beyaz (1,1,1,0) geçerli bir premultiplied değer değildir: sayfanın
 boyamadığı her yere beyaz ekler.
@@ -137,7 +137,7 @@ litehtml font yüklemez; siz vermelisiniz. İki yol:
 
 1. **Önerilen:** `.ttf` dosyasını `.bytes` uzantısıyla projeye koyun (Unity
    `TextAsset` olarak import eder) ve component üstündeki font listesine ekleyin.
-2. **Hızlı başlangıç:** `Use System Fonts` işaretli bırakın — macOS'ta Arial,
+2. **Hızlı başlangıç:** `Use System Fonts` işaretli bırakın; macOS'ta Arial,
    Android'de Roboto bulunur. Layout cihazdan cihaza değişebileceği için
    üretimde kendi fontunuzu gömün.
 
@@ -152,7 +152,7 @@ LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 ```
 
 58 assertion. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
-rasterizer** ile `demo.png` üretir — shader'ın yürütülebilir spesifikasyonu.
+rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
 
 Metin ölçüleri [Ahem](https://github.com/litehtml/litehtml/tree/master/containers/test/fonts)
 fontuyla test ediliyor: her glyph tam 1em genişliğinde dolu bir kare olduğu için
@@ -182,7 +182,7 @@ dönen konik gradient, nefes alan radial gradient, boyut+renk atan yuvarlak kare
 28 çubukluk sinüs dalgası, kayan bar.
 
 **Kare hızı sınırı.** `FrameRateLimiter` ayrı bir bileşen (demoya gömülü değil,
-her sahneye eklenebilir). Varsayılan **61 fps** — tam 60 yerine bir kare pay,
+her sahneye eklenebilir). Varsayılan **61 fps**: tam 60 yerine bir kare pay,
 limiter ile ekran tazeleme hızının birbiriyle yarışmasını önlüyor. Sınır yalnızca
 VSync kapalıyken geçerli olduğu için bileşen ikisini birlikte ayarlıyor.
 Performans sayfasından belge içinden `fps://30` gibi linklerle değiştirilebiliyor.
@@ -202,7 +202,7 @@ Dikkat çeken nokta: **maliyet neredeyse tamamen yeniden parse**, layout pratikt
 bedava. 60 fps bütçesinin (16.6 ms) ~%14'ü. Her karede animasyon şart değilse
 `Animate`'i kapatın; şartsa bir sonraki optimizasyon adımı DOM'u yeniden parse
 etmeden güncellemek (litehtml'in `create_element` / `append_children_from_string`
-API'lerini C ABI'ye açmak) olur — layout zaten ucuz olduğu için kazanç doğrudan
+API'lerini C ABI'ye açmak) olur; layout zaten ucuz olduğu için kazanç doğrudan
 o 1.7 ms'den gelir.
 
 ### Unity (EditMode, gerçek GPU)
@@ -226,7 +226,7 @@ Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -testResults pm
 
 16 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
 sürüyor; PlayMode testleri ise `HtmlView`'ın **MonoBehaviour yaşam
-döngüsünden** geçiyor — `OnEnable`, `LateUpdate` render döngüsü, yüzeyin yeniden
+döngüsünden** geçiyor: `OnEnable`, `LateUpdate` render döngüsü, yüzeyin yeniden
 oluşturulması, `Destroy` sonrası temizlik. Ömür ve kare-kare hatalar burada yaşar.
 
 Kapsam: yüzey üretimi, içerik değişiminin bir sonraki karede ekrana düşmesi,
@@ -271,7 +271,7 @@ kırpma, metin dekorasyonları, liste işaretleyicileri, `:hover`, `<a>` tıklam
   güncelleyip yeniden layout alın.
 - **CSS animasyon/transition/transform.** litehtml desteklemiyor.
 - **Görseller** boru hattı bağlandı (`IHtmlResourceProvider`) ama hazır bir
-  atlas sağlayıcısı bu sürümde yok — kendi implementasyonunuzu verin.
+  atlas sağlayıcısı bu sürümde yok, kendi implementasyonunuzu verin.
 - **Karmaşık metin şekillendirme.** stb_truetype kullanılıyor: Latin/Türkçe
   kusursuz, Arapça/Farsça/Hintçe için HarfBuzz gerekir.
 - `text-transform` yalnızca ASCII (Türkçe i/İ dönüşümü doğru değil).

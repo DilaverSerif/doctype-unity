@@ -9,7 +9,7 @@ under its own licence. Their full licence texts travel with their sources.
 | gumbo | Apache-2.0 | HTML5 parser, bundled inside litehtml |
 | stb_truetype | public domain | glyph rasterization into the font atlas |
 
-litehtml is pinned to a specific revision and carries local patches — two
+litehtml is pinned to a specific revision and carries local patches: two
 performance fixes, an entry point for rewriting text after parsing, and the
 hooks the retained quad cache needs to observe draws and restyles. Each patch is
 marked `LHU PATCH` in the source and states why it exists.
