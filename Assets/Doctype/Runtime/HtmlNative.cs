@@ -78,17 +78,54 @@ namespace Doctype
         private static extern int lhu_element_at(IntPtr ctx, float x, float y,
                                                  [MarshalAs(UnmanagedType.LPArray)] byte[] outId, int len);
 
+        // Reused across calls: hit testing runs per pointer probe, and during a
+        // cross-surface drag that is every frame for every surface under the
+        // finger. Unity scripting is single-threaded, which is what makes a
+        // shared buffer safe here.
+        private static readonly byte[] s_elementIdBuffer = new byte[256];
+
         /// <summary>Id of the topmost element at a document point, or null.</summary>
         public static string ElementAt(IntPtr ctx, float x, float y)
         {
-            var buffer = new byte[128];
+            byte[] buffer = s_elementIdBuffer;
+
             if (lhu_element_at(ctx, x, y, buffer, buffer.Length) == 0)
             {
                 return null;
             }
 
             int end = Array.IndexOf(buffer, (byte)0);
-            return System.Text.Encoding.UTF8.GetString(buffer, 0, end < 0 ? buffer.Length : end);
+            if (end < 0)
+            {
+                end = buffer.Length;
+            }
+
+            // An id longer than the buffer comes back truncated, and the cut
+            // can land inside a multi-byte UTF-8 sequence. Decoding a partial
+            // sequence yields U+FFFD, so drop the fragment instead: walk back
+            // over continuation bytes to the lead and cut there if its
+            // sequence did not complete.
+            if (end == buffer.Length - 1)
+            {
+                int lead = end;
+                while (lead > 0 && (buffer[lead - 1] & 0xC0) == 0x80)
+                {
+                    lead--;
+                }
+
+                if (lead > 0 && buffer[lead - 1] >= 0xC0)
+                {
+                    lead--;
+                    byte b = buffer[lead];
+                    int expected = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : 2;
+                    if (end - lead < expected)
+                    {
+                        end = lead;
+                    }
+                }
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer, 0, end);
         }
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]

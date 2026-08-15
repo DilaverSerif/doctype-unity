@@ -185,7 +185,8 @@ namespace Doctype.Tests
             doc.Layout(400f);
             Assert.AreEqual(0xFF0000FFu, FirstRectColor(doc), "starts red");
 
-            Assert.IsTrue(doc.MouseMove(new Vector2(50f, 50f)), "moving over the element reports a change");
+            Assert.AreNotEqual(HtmlDirty.None, doc.MouseMove(new Vector2(50f, 50f)),
+                               "moving over the element reports a change");
             Assert.AreEqual(0xFFFF0000u, FirstRectColor(doc), "turns blue while hovered");
 
             doc.MouseMove(new Vector2(350f, 250f));

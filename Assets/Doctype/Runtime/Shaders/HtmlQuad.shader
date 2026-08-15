@@ -84,12 +84,32 @@ Shader "Doctype/Quad"
                 float2 misc     : TEXCOORD9; // type, gradient row
             };
 
+            // The exact sRGB transfer function, not Unity's GammaToLinearSpace
+            // approximation. The approximation is off by several 8-bit steps in
+            // dark colours, which is exactly where UI backgrounds live, so a
+            // CSS colour would not survive the round trip through an sRGB target.
+            float3 SRGBToLinearExact(float3 c)
+            {
+                float3 lo = c / 12.92;
+                float3 hi = pow(max((c + 0.055) / 1.055, 0.0), 2.4);
+                return lerp(lo, hi, step(0.04045, c));
+            }
+
             v2f vert(appdata v)
             {
                 v2f o;
                 o.pos      = UnityObjectToClipPos(v.vertex);
                 o.uvDoc    = float4(v.uv.xy, v.vertex.xy);
                 o.color    = v.color;
+                #ifndef UNITY_COLORSPACE_GAMMA
+                    // Vertex colours arrive as raw sRGB bytes; the target wants
+                    // linear. Converted here, not in frag: the mesh builder
+                    // writes one colour per quad, so all four vertices carry the
+                    // same value and interpolation cannot invent a new one --
+                    // this is the exact same result, minus a pow() per fragment
+                    // on a shader whose measured cost is fragment work.
+                    o.color.rgb = SRGBToLinearExact(o.color.rgb);
+                #endif
                 o.rect     = v.rect;
                 o.radiusX  = v.radiusX;
                 o.radiusY  = v.radiusY;
@@ -165,17 +185,6 @@ Shader "Doctype/Quad"
                 return best;
             }
 
-            // The exact sRGB transfer function, not Unity's GammaToLinearSpace
-            // approximation. The approximation is off by several 8-bit steps in
-            // dark colours, which is exactly where UI backgrounds live, so a
-            // CSS colour would not survive the round trip through an sRGB target.
-            float3 SRGBToLinearExact(float3 c)
-            {
-                float3 lo = c / 12.92;
-                float3 hi = pow(max((c + 0.055) / 1.055, 0.0), 2.4);
-                return lerp(lo, hi, step(0.04045, c));
-            }
-
             float4 sampleGradient(float row, float t)
             {
                 float rows = max(_GradSize.y, 1.0);
@@ -190,12 +199,7 @@ Shader "Doctype/Quad"
                 float2 rel = p - i.rect.xy;
                 float2 hs  = i.rect.zw;
 
-                float4 col = i.color;
-                #ifndef UNITY_COLORSPACE_GAMMA
-                    // Vertex colours arrive as raw sRGB bytes; the render target
-                    // expects linear.
-                    col.rgb = SRGBToLinearExact(col.rgb);
-                #endif
+                float4 col = i.color;   // already linear; see vert
 
                 float alpha = 1.0;
 

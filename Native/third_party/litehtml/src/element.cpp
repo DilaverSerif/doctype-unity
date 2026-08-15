@@ -1,4 +1,5 @@
 #include "html.h"
+#include <cstring>
 #include "element.h"
 #include "document.h"
 #include "render_item.h"
@@ -194,6 +195,121 @@ namespace litehtml
         m_renders.push_back(ri);
     }
 
+
+    // LHU PATCH (input/layout contract). find_styles_changes() tells the host
+    // *that* styles changed, but not whether layout still matches them: a
+    // :hover that turns a border blue and a :hover that makes it wider report
+    // identically. The host then has to choose between re-running layout on
+    // every pointer twitch and drawing stale geometry. These helpers hash the
+    // computed values layout actually reads, over the restyled subtree, so the
+    // change can be classified instead of guessed at.
+    //
+    // Deliberately absent from the hash: colours, background, border radius,
+    // z-index, visibility, cursor, text-decoration -- paint-only properties. A
+    // property missing from this list that layout *does* read would resurrect
+    // the stale-geometry bug, which is why the harness pins both directions.
+    namespace
+    {
+    inline void geo_mix(uint64_t& h, uint64_t v)
+    {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
+
+    inline void geo_float(uint64_t& h, float f)
+    {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof bits);
+        geo_mix(h, bits);
+    }
+
+    inline void geo_length(uint64_t& h, const css_length& l)
+    {
+        if(l.is_predefined())
+        {
+            geo_mix(h, 0x8000000000000000ULL | uint64_t(l.predef()));
+        } else
+        {
+            geo_float(h, l.val());
+        }
+        geo_mix(h, uint64_t(l.units()));
+    }
+
+    void geo_element(uint64_t& h, element* el)
+    {
+        const css_properties& c = el->css();
+
+        geo_mix(h, uint64_t(c.get_display()));
+        geo_mix(h, uint64_t(c.get_position()));
+        geo_mix(h, uint64_t(c.get_float()));
+        geo_mix(h, uint64_t(c.get_clear()));
+        geo_mix(h, uint64_t(c.get_overflow()));
+        geo_mix(h, uint64_t(c.get_white_space()));
+        geo_mix(h, uint64_t(c.get_text_align()));
+        geo_mix(h, uint64_t(c.get_vertical_align()));
+        geo_mix(h, uint64_t(c.get_box_sizing()));
+        geo_mix(h, uint64_t(c.get_text_transform()));
+
+        geo_length(h, c.get_width());
+        geo_length(h, c.get_height());
+        geo_length(h, c.get_min_width());
+        geo_length(h, c.get_min_height());
+        geo_length(h, c.get_max_width());
+        geo_length(h, c.get_max_height());
+        geo_length(h, c.get_text_indent());
+
+        const css_margins& m = c.get_margins();
+        geo_length(h, m.left);   geo_length(h, m.top);
+        geo_length(h, m.right);  geo_length(h, m.bottom);
+
+        const css_margins& p = c.get_padding();
+        geo_length(h, p.left);   geo_length(h, p.top);
+        geo_length(h, p.right);  geo_length(h, p.bottom);
+
+        // Width and style only: a border that changes colour keeps its box.
+        const css_borders& b = c.get_borders();
+        geo_length(h, b.left.width);   geo_mix(h, uint64_t(b.left.style));
+        geo_length(h, b.top.width);    geo_mix(h, uint64_t(b.top.style));
+        geo_length(h, b.right.width);  geo_mix(h, uint64_t(b.right.style));
+        geo_length(h, b.bottom.width); geo_mix(h, uint64_t(b.bottom.style));
+
+        const css_offsets& o = c.get_offsets();
+        geo_length(h, o.left);   geo_length(h, o.top);
+        geo_length(h, o.right);  geo_length(h, o.bottom);
+
+        // The font handle stands in for family/weight/style at once: the
+        // container hands back a different handle for a different face, and a
+        // different face means different metrics.
+        geo_mix(h, uint64_t(c.get_font()));
+        geo_float(h, float(c.get_font_size()));
+        geo_float(h, float(c.line_height().computed_value));
+
+        geo_float(h, c.get_flex_grow());
+        geo_float(h, c.get_flex_shrink());
+        geo_length(h, c.get_flex_basis());
+        geo_mix(h, uint64_t(c.get_flex_direction()));
+        geo_mix(h, uint64_t(c.get_flex_wrap()));
+        geo_mix(h, uint64_t(c.get_flex_justify_content()));
+        geo_mix(h, uint64_t(c.get_flex_align_items()));
+        geo_mix(h, uint64_t(c.get_flex_align_self()));
+        geo_mix(h, uint64_t(c.get_flex_align_content()));
+        geo_mix(h, uint64_t(c.get_order()));
+    }
+
+    // The whole subtree, because compute_styles() is recursive: a hover on a
+    // parent can move a grandchild through inheritance without the grandchild
+    // ever reporting requires_styles_update() itself.
+    uint64_t geo_subtree(element* el)
+    {
+        uint64_t h = 0xcbf29ce484222325ULL;
+        geo_element(h, el);
+        for(const auto& child : el->children())
+        {
+            geo_mix(h, geo_subtree(child.get()));
+        }
+        return h;
+    }
+    } // namespace
+
     bool element::find_styles_changes(const std::function<void(const position&)>& redraw_box)
     {
         if(css().get_display() == display_inline_text)
@@ -221,8 +337,28 @@ namespace litehtml
                 process_boxes(el);
             }
 
+            // LHU PATCH (input/layout contract): classify the restyle. The
+            // snapshot has to bracket refresh+compute, and it has to happen
+            // here rather than in the hook below -- the hook only sees the
+            // world after the change.
+            const uint64_t geo_before = geo_subtree(this);
+
             refresh_styles();
             compute_styles();
+
+            if(geo_subtree(this) != geo_before)
+            {
+                if(auto doc = get_document())
+                {
+                    if(const auto* dcache = doc->draw_cache())
+                    {
+                        if(dcache->geometry_changed)
+                        {
+                            dcache->geometry_changed(dcache->ctx);
+                        }
+                    }
+                }
+            }
 
             // LiteHtmlUnity (experiment E2): compute_styles() is recursive, so
             // everything this element and its descendants drew is now stale.

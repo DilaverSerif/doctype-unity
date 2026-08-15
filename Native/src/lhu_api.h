@@ -214,6 +214,22 @@ LHU_API float lhu_doc_height(LhuContext* ctx);
 
 // --- input (all return 1 when something changed and a redraw is needed) -----
 
+// What an input event dirtied. lhu_mouse_move/down/up/leave return these bits.
+//
+// PAINT alone means styles changed but every box kept its size and place: the
+// host re-records and redraws. LAYOUT means a :hover/:active rule touched a
+// value layout reads -- a width, a font, a display -- and the positions in the
+// render tree are now stale, so the host must run lhu_layout() before the next
+// lhu_record(). A zero return means the event changed nothing at all.
+//
+// (lhu_scroll is not part of this contract: it returns how many scroll views
+// consumed the delta, and scrolling moves content without invalidating it.)
+typedef enum LhuDirtyFlags
+{
+    LHU_DIRTY_PAINT  = 1,
+    LHU_DIRTY_LAYOUT = 2,
+} LhuDirtyFlags;
+
 LHU_API int32_t lhu_mouse_move(LhuContext* ctx, float x, float y);
 LHU_API int32_t lhu_mouse_down(LhuContext* ctx, float x, float y);
 LHU_API int32_t lhu_mouse_up(LhuContext* ctx, float x, float y);

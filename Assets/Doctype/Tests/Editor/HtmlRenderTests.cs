@@ -208,7 +208,7 @@ namespace Doctype.Tests
             Render(html);
             AssertColor(50, 50, 255, 0, 0, "unhovered");
 
-            Assert.IsTrue(_doc.MouseMove(new Vector2(50f, 50f)));
+            Assert.AreNotEqual(HtmlDirty.None, _doc.MouseMove(new Vector2(50f, 50f)));
 
             NativeArray<HtmlQuad> quads = _doc.Record(out HtmlFrame frame);
             _renderer.Render(quads, frame, _target, Color.clear, new Vector2(Width, Height));

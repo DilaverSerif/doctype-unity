@@ -459,24 +459,31 @@ namespace Doctype
         // --- input -----------------------------------------------------------
 
         /// <returns>True when the document changed and needs re-recording.</returns>
-        public bool MouseMove(Vector2 documentPoint)
+        // Each of these returns what the event dirtied, not merely whether it
+        // did: a caller that treats Layout as Paint draws stale geometry the
+        // first time a :hover rule resizes something.
+
+        public HtmlDirty MouseMove(Vector2 documentPoint)
         {
-            return IsValid && HtmlNative.lhu_mouse_move(_ctx, documentPoint.x, documentPoint.y) != 0;
+            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_move(_ctx, documentPoint.x, documentPoint.y)
+                           : HtmlDirty.None;
         }
 
-        public bool MouseDown(Vector2 documentPoint)
+        public HtmlDirty MouseDown(Vector2 documentPoint)
         {
-            return IsValid && HtmlNative.lhu_mouse_down(_ctx, documentPoint.x, documentPoint.y) != 0;
+            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_down(_ctx, documentPoint.x, documentPoint.y)
+                           : HtmlDirty.None;
         }
 
-        public bool MouseUp(Vector2 documentPoint)
+        public HtmlDirty MouseUp(Vector2 documentPoint)
         {
-            return IsValid && HtmlNative.lhu_mouse_up(_ctx, documentPoint.x, documentPoint.y) != 0;
+            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_up(_ctx, documentPoint.x, documentPoint.y)
+                           : HtmlDirty.None;
         }
 
-        public bool MouseLeave()
+        public HtmlDirty MouseLeave()
         {
-            return IsValid && HtmlNative.lhu_mouse_leave(_ctx) != 0;
+            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_leave(_ctx) : HtmlDirty.None;
         }
 
         /// <returns>Number of elements that consumed the scroll; 0 means the host should scroll.</returns>
@@ -550,8 +557,19 @@ namespace Doctype
                     return 0;
                 }
 
-                var values = new[] { uv.xMin, uv.yMin, uv.xMax, uv.yMax };
-                Marshal.Copy(values, 0, outUv4, 4);
+                // Written in place: this callback runs once per image quad
+                // per recording, which on an image-heavy page that redraws
+                // every frame is exactly where a four-float allocation turns
+                // into GC pressure.
+                unsafe
+                {
+                    float* p = (float*)outUv4;
+                    p[0] = uv.xMin;
+                    p[1] = uv.yMin;
+                    p[2] = uv.xMax;
+                    p[3] = uv.yMax;
+                }
+
                 return 1;
             }
             catch (Exception e)

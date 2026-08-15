@@ -1142,21 +1142,45 @@ float lhu_doc_height(LhuContext* ctx)
     return ctx ? ctx->doc_height : 0.f;
 }
 
+namespace
+{
+// Turns "on_mouse_* reported a change" into LhuDirtyFlags. The geometry hook
+// fires during the call when the restyle moved anything layout reads; when the
+// hooks are not attached at all (quad cache disabled), nobody was watching, so
+// every change has to be treated as geometry -- stale layout is the failure
+// mode this contract exists to prevent, and a pessimistic extra layout is not.
+int32_t classify_input_change(LhuContext* ctx, bool changed)
+{
+    if(!changed)
+    {
+        return 0;
+    }
+
+    int32_t flags = LHU_DIRTY_PAINT;
+
+    const bool watched = ctx->doc->draw_cache() != nullptr;
+    if(!watched || ctx->cache.take_geometry_changed())
+    {
+        flags |= LHU_DIRTY_LAYOUT;
+        ctx->invalidate_layout();
+    }
+    return flags;
+}
+} // namespace
+
 int32_t lhu_mouse_move(LhuContext* ctx, float x, float y)
 {
     if(!ctx || !ctx->doc)
     {
         return 0;
     }
-    // A :hover rule can change any property, including ones that resize a box,
-    // so a hit that reports a change puts the layout back on the slow path.
+    // Clear a stale flag so the classification below reads only what THIS
+    // event did, then let the hook observe the restyle as it happens.
+    ctx->cache.take_geometry_changed();
+
     const bool changed = ctx->doc->on_mouse_over(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
                                                  litehtml::pixel_t(y), kIgnoreRedraw);
-    if(changed)
-    {
-        ctx->invalidate_layout();
-    }
-    return changed ? 1 : 0;
+    return classify_input_change(ctx, changed);
 }
 
 int32_t lhu_mouse_down(LhuContext* ctx, float x, float y)
@@ -1165,13 +1189,11 @@ int32_t lhu_mouse_down(LhuContext* ctx, float x, float y)
     {
         return 0;
     }
+    ctx->cache.take_geometry_changed();
+
     const bool changed = ctx->doc->on_lbutton_down(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
                                                    litehtml::pixel_t(y), kIgnoreRedraw);
-    if(changed)
-    {
-        ctx->invalidate_layout();
-    }
-    return changed ? 1 : 0;
+    return classify_input_change(ctx, changed);
 }
 
 int32_t lhu_mouse_up(LhuContext* ctx, float x, float y)
@@ -1180,13 +1202,11 @@ int32_t lhu_mouse_up(LhuContext* ctx, float x, float y)
     {
         return 0;
     }
+    ctx->cache.take_geometry_changed();
+
     const bool changed = ctx->doc->on_lbutton_up(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
                                                  litehtml::pixel_t(y), kIgnoreRedraw);
-    if(changed)
-    {
-        ctx->invalidate_layout();
-    }
-    return changed ? 1 : 0;
+    return classify_input_change(ctx, changed);
 }
 
 int32_t lhu_mouse_leave(LhuContext* ctx)
@@ -1195,12 +1215,10 @@ int32_t lhu_mouse_leave(LhuContext* ctx)
     {
         return 0;
     }
+    ctx->cache.take_geometry_changed();
+
     const bool changed = ctx->doc->on_mouse_leave(kIgnoreRedraw);
-    if(changed)
-    {
-        ctx->invalidate_layout();
-    }
-    return changed ? 1 : 0;
+    return classify_input_change(ctx, changed);
 }
 
 int32_t lhu_scroll(LhuContext* ctx, float dx, float dy, float x, float y)

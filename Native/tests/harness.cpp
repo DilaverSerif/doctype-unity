@@ -817,6 +817,75 @@ void test_demo_page()
     }
 }
 
+
+// Input events must say WHAT they dirtied, not just that they did. A :hover
+// that recolours reports paint; a :hover that resizes reports layout too. The
+// host draws stale geometry if layout-dirty is under-reported, and pays a full
+// layout per pointer twitch if it is over-reported -- so both directions are
+// pinned, on the same page.
+void test_input_dirty_flags()
+{
+    std::printf("\n[input dirty flags]\n");
+
+    const char* html = R"HTML(
+<html><head><style>
+  body { margin:0; }
+  div  { height:40px; }
+  #paint { width:100px; background:#333; }
+  #paint:hover { background:#f00; }
+  #grow { width:100px; background:#333; }
+  #grow:hover { width:200px; }
+  #parent { width:100px; background:#333; }
+  #child { width:50px; height:10px; }
+  #parent:hover #child { height:30px; }
+</style></head><body>
+  <div id="paint"></div>
+  <div id="grow"></div>
+  <div id="parent"><div id="child"></div></div>
+</body></html>)HTML";
+
+    Fixture fx(false);
+    fx.render(html, 400.f, 400.f);
+
+    const auto width_of = [&fx](const char* sel) {
+        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+        lhu_element_rect(fx.ctx, sel, &x, &y, &w, &h);
+        return w;
+    };
+
+    // Paint-only hover: over #paint (rows are 40px tall, stacked).
+    int32_t flags = lhu_mouse_move(fx.ctx, 50.f, 20.f);
+    check(flags == LHU_DIRTY_PAINT, "recolouring hover reports paint only");
+
+    // Off to bare page (bottom of the viewport, below all rows).
+    lhu_mouse_move(fx.ctx, 300.f, 390.f);
+
+    // Geometry hover: over #grow.
+    flags = lhu_mouse_move(fx.ctx, 50.f, 60.f);
+    check((flags & LHU_DIRTY_LAYOUT) != 0, "resizing hover reports layout");
+
+    lhu_layout(fx.ctx, 400.f);
+    check_near(width_of("#grow"), 200.f, 0.5f, "and the new width is real after layout");
+
+    // Leaving it undoes the resize, which is itself a layout change.
+    flags = lhu_mouse_leave(fx.ctx);
+    check((flags & LHU_DIRTY_LAYOUT) != 0, "leaving a resizing hover reports layout");
+
+    lhu_layout(fx.ctx, 400.f);
+    check_near(width_of("#grow"), 100.f, 0.5f, "and the width snaps back");
+
+    // The descendant case: the rule fires on #parent's hover but moves #child.
+    // compute_styles is recursive, so this is the case a naive per-element
+    // check misses.
+    flags = lhu_mouse_move(fx.ctx, 50.f, 100.f);
+    check((flags & LHU_DIRTY_LAYOUT) != 0, "hover that resizes a descendant reports layout");
+
+    lhu_layout(fx.ctx, 400.f);
+    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    lhu_element_rect(fx.ctx, "#child", &x, &y, &w, &h);
+    check_near(h, 30.f, 0.5f, "and the descendant grew");
+}
+
 // A host re-sends the viewport on every layout; only a real change may restyle.
 //
 // Regression: making lhu_set_viewport mark styles stale unconditionally turned
@@ -906,6 +975,7 @@ int main(int argc, char** argv)
     test_radial_conic();
     test_glyph_cache_churn();
     test_kern_cache();
+    test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
     test_demo_page();
 

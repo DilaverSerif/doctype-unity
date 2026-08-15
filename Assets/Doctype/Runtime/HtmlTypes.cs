@@ -178,4 +178,25 @@ namespace Doctype
         public IntPtr OnElementClick;
         public IntPtr OnSetCursor;
     }
+
+    /// <summary>
+    /// What an input event dirtied. Mirrors <c>LhuDirtyFlags</c> in
+    /// Native/src/lhu_api.h; the values are part of the ABI.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Paint"/> alone means styles changed but every box kept its
+    /// size and place — re-record and redraw. <see cref="Layout"/> means a
+    /// :hover/:active rule touched a value layout reads, and the positions in
+    /// the render tree are stale until layout runs again. The distinction is
+    /// what lets a pointer move over a recolouring button cost a redraw instead
+    /// of a full layout pass.
+    /// </remarks>
+    [Flags]
+    public enum HtmlDirty
+    {
+        None = 0,
+        Paint = 1,
+        Layout = 2,
+    }
+
 }

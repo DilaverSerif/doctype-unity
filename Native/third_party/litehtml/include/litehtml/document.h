@@ -82,6 +82,14 @@ namespace litehtml
             // An element's styles were recomputed because a pseudo-class
             // changed; everything it and its descendants drew is now stale.
             void (*styles_changed)(void* ctx, element* el) = nullptr;
+
+            // LHU PATCH (input/layout contract). A pseudo-class restyle changed
+            // a value that layout reads -- a width, a font, a display -- so the
+            // positions in the render tree no longer match the styles. Without
+            // this the host cannot tell a :hover that recolours a button from a
+            // :hover that resizes it, and has to either re-run layout on every
+            // pointer move or draw stale geometry.
+            void (*geometry_changed)(void* ctx) = nullptr;
         };
 
         void                    set_draw_cache(const draw_cache_hooks* hooks) { m_draw_cache = hooks; }

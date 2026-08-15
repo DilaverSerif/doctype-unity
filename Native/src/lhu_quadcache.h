@@ -62,10 +62,21 @@ class QuadCache
         m_hooks.open           = &QuadCache::hook_open;
         m_hooks.close          = &QuadCache::hook_close;
         m_hooks.styles_changed = &QuadCache::hook_styles_changed;
+        m_hooks.geometry_changed = &QuadCache::hook_geometry_changed;
     }
 
     bool enabled() const { return m_enabled; }
     void set_enabled(bool on) { m_enabled = on; }
+
+    // True once since the last call if a pseudo-class restyle changed a value
+    // layout reads. Read-and-clear, because the interesting window is exactly
+    // one input event: the caller brackets an on_mouse_* call with it.
+    bool take_geometry_changed()
+    {
+        const bool v = m_geometry_changed;
+        m_geometry_changed = false;
+        return v;
+    }
 
     const litehtml::document::draw_cache_hooks* hooks() const { return &m_hooks; }
 
@@ -176,6 +187,11 @@ class QuadCache
     static void hook_close(void* ctx);
     static void hook_styles_changed(void* ctx, litehtml::element* el);
 
+    static void hook_geometry_changed(void* ctx)
+    {
+        static_cast<QuadCache*>(ctx)->m_geometry_changed = true;
+    }
+
     int  open(litehtml::render_item* ri, int flag, float x, float y);
     void close();
 
@@ -185,6 +201,8 @@ class QuadCache
     Container& m_container;
 
     litehtml::document::draw_cache_hooks m_hooks {};
+
+    bool m_geometry_changed = false;
 
     bool m_enabled = true;
 

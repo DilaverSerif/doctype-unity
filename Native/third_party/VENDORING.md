@@ -18,7 +18,7 @@ Patched at the time of writing:
 | `src/document_container.cpp`, `include/litehtml/document_container.h` | inline `style=` attributes were re-tokenised per element; identical declaration blocks are now parsed once per container. |
 | `src/html_tag.cpp` | uses the cache above. |
 | `src/el_text.cpp`, `include/litehtml/el_text.h` | text nodes could not be rewritten after parsing, which is what `lhu_set_text` needs. |
-| `src/element.cpp`, `src/render_item.cpp`, `src/render_table.cpp`, `include/litehtml/document.h`, `include/litehtml/render_item.h` | hooks the retained quad cache needs to see draws and restyles. |
+| `src/element.cpp`, `src/render_item.cpp`, `src/render_table.cpp`, `include/litehtml/document.h`, `include/litehtml/render_item.h` | hooks the retained quad cache needs to see draws and restyles, plus a `geometry_changed` hook: `find_styles_changes` hashes the layout-relevant computed values of the restyled subtree before and after, so a host can tell a :hover that recolours from one that resizes. |
 
 To update litehtml: clone the new revision beside this one, diff each patched
 file against the old upstream revision above, and re-apply what still applies.

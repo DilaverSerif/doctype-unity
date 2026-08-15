@@ -646,13 +646,22 @@ namespace Doctype
             _document.SetDeviceScale(_deviceScale);
             _document.SetViewport(width, height);
 
-            _stopwatch.Restart();
-            float documentHeight = _document.Layout(width);
-            _stopwatch.Stop();
-            LayoutMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+            float documentHeight = MeasuredLayout(width);
 
-            LayoutCount++;
-            LayoutMsTotal += LayoutMs;
+            // Restoring the pointer can itself dirty layout: the re-applied
+            // :hover may resize what it lands on. That has to be answered
+            // before this frame renders, not next frame — the whole point of
+            // the dirty contract is that stale geometry never reaches a draw.
+            // Hit testing needs the laid-out tree, hence after the first pass.
+            if (_documentWasReparsed)
+            {
+                _documentWasReparsed = false;
+
+                if ((RestorePointerState() & HtmlDirty.Layout) != 0)
+                {
+                    documentHeight = MeasuredLayout(width);
+                }
+            }
 
             if (_autoHeight)
             {
@@ -666,36 +675,47 @@ namespace Doctype
             _laidOutFor = _size;
             _laidOutScale = _deviceScale;
 
-            if (_documentWasReparsed)
-            {
-                _documentWasReparsed = false;
-                RestorePointerState();
-            }
-
             _needsRender = true;
         }
 
         /// <summary>
-        /// Re-applies the pointer to a freshly parsed document.
+        /// Re-applies the pointer to a freshly parsed document, and reports what
+        /// doing so dirtied.
         /// </summary>
         /// <remarks>
         /// Hit testing needs a laid-out tree, so this runs after layout. Sending
         /// the press again matters as much as the move: litehtml only reports a
         /// click when the release finds the same element still marked active.
         /// </remarks>
-        private void RestorePointerState()
+        private HtmlDirty RestorePointerState()
         {
             if (!_hasPointer)
             {
-                return;
+                return HtmlDirty.None;
             }
 
-            _document.MouseMove(_lastPointer);
+            HtmlDirty dirty = _document.MouseMove(_lastPointer);
 
             if (_pointerDown)
             {
-                _document.MouseDown(_lastPointer);
+                dirty |= _document.MouseDown(_lastPointer);
             }
+
+            return dirty;
+        }
+
+        /// <summary>One layout pass, with the bookkeeping the benchmark reads.</summary>
+        private float MeasuredLayout(float width)
+        {
+            _stopwatch.Restart();
+            float documentHeight = _document.Layout(width);
+            _stopwatch.Stop();
+            LayoutMs = (float)_stopwatch.Elapsed.TotalMilliseconds;
+
+            LayoutCount++;
+            LayoutMsTotal += LayoutMs;
+
+            return documentHeight;
         }
 
         private void EnsureTarget()
@@ -794,14 +814,36 @@ namespace Doctype
             return new Vector2(normalized.x * width, (1f - normalized.y) * height);
         }
 
+        /// <summary>
+        /// Applies what an input event dirtied. Paint alone re-records and
+        /// redraws; Layout also re-runs layout first, because native has just
+        /// said the render tree's positions no longer match its styles — a
+        /// :hover rule resized something. Treating that as Paint is how a
+        /// button grows its hitbox but not its pixels.
+        /// </summary>
+        private void ApplyInputDirty(HtmlDirty dirty)
+        {
+            if (dirty == HtmlDirty.None)
+            {
+                return;
+            }
+
+            _needsRender = true;
+
+            if ((dirty & HtmlDirty.Layout) != 0)
+            {
+                _needsLayout = true;
+            }
+        }
+
         public void PointerMove(Vector2 documentPoint)
         {
             _lastPointer = documentPoint;
             _hasPointer = true;
 
-            if (_document != null && _document.MouseMove(documentPoint))
+            if (_document != null)
             {
-                _needsRender = true;
+                ApplyInputDirty(_document.MouseMove(documentPoint));
             }
         }
 
@@ -811,9 +853,9 @@ namespace Doctype
             _hasPointer = true;
             _pointerDown = true;
 
-            if (_document != null && _document.MouseDown(documentPoint))
+            if (_document != null)
             {
-                _needsRender = true;
+                ApplyInputDirty(_document.MouseDown(documentPoint));
             }
         }
 
@@ -823,9 +865,9 @@ namespace Doctype
             _hasPointer = true;
             _pointerDown = false;
 
-            if (_document != null && _document.MouseUp(documentPoint))
+            if (_document != null)
             {
-                _needsRender = true;
+                ApplyInputDirty(_document.MouseUp(documentPoint));
             }
         }
 
@@ -834,9 +876,9 @@ namespace Doctype
             _hasPointer = false;
             _pointerDown = false;
 
-            if (_document != null && _document.MouseLeave())
+            if (_document != null)
             {
-                _needsRender = true;
+                ApplyInputDirty(_document.MouseLeave());
             }
         }
 

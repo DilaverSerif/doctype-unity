@@ -275,5 +275,39 @@ namespace Doctype.Tests
 
             Object.DestroyImmediate(canvasGo);
         }
+
+        /// <summary>
+        /// A :hover rule that resizes must resize on screen, not just in the
+        /// styles. This is the input/layout contract end to end: PointerMove
+        /// reports Layout, the view re-runs layout before the next record, and
+        /// the rect the game reads matches what the player sees.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator HoverThatResizesRelayouts()
+        {
+            _view.SetSize(400, 300);
+            _view.LoadHtml("<body style='margin:0'>" +
+                           "<style>#grow { width:100px; height:40px; background:#333; }" +
+                           " #grow:hover { width:200px; }</style>" +
+                           "<div id='grow'></div></body>");
+            yield return WaitForRender();
+
+            Assert.IsTrue(_view.TryGetElementRect("#grow", out Rect before));
+            Assert.AreEqual(100f, before.width, 0.5f, "starts at its resting width");
+
+            _view.PointerMove(new Vector2(50f, 20f));
+            yield return WaitForRender();
+
+            Assert.IsTrue(_view.TryGetElementRect("#grow", out Rect hovered));
+            Assert.AreEqual(200f, hovered.width, 0.5f,
+                            "the rect the game reads matches the hover style, not the stale layout");
+
+            _view.PointerExit();
+            yield return WaitForRender();
+
+            Assert.IsTrue(_view.TryGetElementRect("#grow", out Rect after));
+            Assert.AreEqual(100f, after.width, 0.5f, "and it snaps back on exit");
+        }
+
     }
 }
