@@ -66,6 +66,18 @@ namespace litehtml
         // subtree below it has to be treated as dirty, not just this node.
         bool     dc_force_subtree = false;
 
+        // --- LiteHtmlUnity: subtree relayout (experiment E8)
+        //
+        // The inputs of the last render() call, captured so the host can
+        // re-lay a mutated subtree in place with exactly the inputs the full
+        // pass gave it, then verify the resulting footprint did not move.
+        // ~64 bytes per item; the alternative is a full-document render per
+        // text mutation.
+        containing_block_context lhu_last_cb;
+        pixel_t                  lhu_last_x    = 0;
+        pixel_t                  lhu_last_y    = 0;
+        bool                     lhu_rendered  = false;
+
         explicit render_item(std::shared_ptr<element> src_el);
 
         virtual ~render_item() = default;

@@ -40,9 +40,10 @@ world-space quad, a material slot on a monitor prop.
   another**, which is what lets a HUD be several independent panels instead of
   one screen-sized sheet.
 - **Mutation without re-parsing.** `SetText` and `SetStyle` change a text node or
-  an inline style in place. Re-parsing a document is ~11 ms on a budget phone;
-  these are ~0.2 ms, and they keep hover, focus and scroll state that a re-parse
-  would throw away.
+  an inline style in place, and the layout they dirty is answered by re-laying
+  just the touched subtree when that is provably enough, so the cost of a
+  changing number no longer scales with the size of the page. They also keep
+  hover, focus and scroll state that a re-parse would throw away.
 - **Partial redraw.** The native side byte-diffs every recorded frame against the
   previous one and reports a dirty rectangle; the renderer scissors to it and
   keeps the rest of the target from the last frame. Changing a score repaints
@@ -125,15 +126,15 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.77 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.18** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.62** | **0** |
-| one text node changed per frame | 383 | 1.99 | **3.35** | 171 |
-| one inline style changed per frame | 383 | 1.74 | **3.48** | 165 |
-| scrolled every frame | 410 | 1.55 | **4.28** | 183 |
-| resized every frame | 412 | 4.54 | **8.48** | 183 |
-| re-parsed every frame | 384 | 12.43 | **4.24** | 171 |
-| four panels, one text node each | 1532 | 6.81 | **5.03** | 2729 |
+| no HUD at all | 0 | 0.00 | 2.75 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.15** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.64** | **0** |
+| one text node changed per frame | 383 | **0.93** | **3.35** | 171 |
+| one inline style changed per frame | 383 | **1.08** | **3.50** | 165 |
+| scrolled every frame | 410 | 1.45 | **4.34** | 183 |
+| resized every frame | 412 | 4.45 | **8.53** | 183 |
+| re-parsed every frame | 384 | 12.25 | **4.22** | 171 |
+| four panels, one text node each | 1532 | **2.81** | **5.16** | 2729 |
 
 ### A HUD that is not changing is free
 
@@ -254,13 +255,35 @@ once from 16.0 to 8.1, a style change from 4.1 to 3.5. Nothing in the table
 now costs more than 8.5 ms, and the rows still at that mark are full repaints
 doing honest work.
 
+### Layout that no longer scales with the page
+
+litehtml has no incremental layout: `document::render()` visits every render
+item, so a four-character text change used to pay for the whole page. Now,
+when a frame's only stale geometry sits inside one element's subtree (which
+is what `SetText` and `SetStyle` know by construction), the native side
+re-lays just that element's nearest block ancestor, in place, with the exact
+containing-block inputs the last full pass gave it, and keeps the result only
+if the block's outer footprint lands bit-identically where it was. Plain
+in-flow blocks read nothing from a subtree except its footprint, so an
+unmoved footprint proves the rest of the page. Anything that could break the
+reasoning refuses the shortcut instead of risking it: documents with floats
+or absolute positioning, mutations under flex, table or inline-block
+ancestors (their intrinsic widths leak upward past the footprint check),
+several mutated elements in one frame, and any footprint that moved.
+
+On the phone the layout column of a text mutation went from 0.80 ms to
+0.00, and four panels mutating at once from 2.87 to 0.01. A mutation's total
+CPU halved (1.87 to 0.93 ms), and four panels now cost 2.81 ms where the
+morning's build paid 7.2, because the quad cache finally gets to do its job
+too: 111 000 of a frame's 115 000 quads are replayed rather than re-recorded.
+
 One consequence: `RenderScale` used to be the big lever, and now it only
 matters for full redraws. A mutating panel at half resolution measures 3.19 ms
 against 3.34 at full, because the dirty region is small either way.
 
 ### Re-parsing is the expensive thing, so don't
 
-Rebuilding a document from a string costs 12.6 ms of CPU, of which **10.9 ms is
+Rebuilding a document from a string costs 12.3 ms of CPU, of which **10.7 ms is
 parsing**, and most of that is litehtml re-parsing its own default stylesheet,
 a fixed price per document regardless of page size. Two things take it off the
 table: a trimmed master stylesheet for game UI (~2.4× faster document creation),
@@ -323,12 +346,22 @@ is a Player Setting and defaults to off, on every platform and every graphics
 API. The GPU column read "n/a" from top to bottom, which looks exactly like a
 device refusing to answer.
 
+**A re-sent device scale was resetting everything, every frame.** The host
+re-sends the device scale before every layout, and the native side treated
+each send as a change: layout invalidated, retained quad cache thrown away,
+once per frame, on the device only (desktop probes drive the API directly and
+never re-send). Every layout fast path was silently disarmed, and the
+benchmark's cache column had been printing `rebuild=300` per scenario all
+along; what finally got it read was a new optimisation refusing to show up in
+the numbers. The viewport setter had grown a same-value guard for exactly
+this reason; the scale setter had not.
+
 ---
 
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 120 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 137 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 693 frame comparisons
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
@@ -343,7 +376,7 @@ without a GPU in the loop.
 Working and measured, not yet a released package. The interfaces described above
 are stable enough to build on; the roadmap is about cost, not correctness:
 shaving what is left of a full repaint (the panel background still paints
-under every row), and separating layout cost from document size.
+under every row), and the parse cost of a genuine reload.
 
 ## Licence and credits
 

@@ -1107,6 +1107,174 @@ void test_scroll_partial_redraw()
     }
 }
 
+// EXPERIMENT E8: subtree relayout. The proof style is A/B: two contexts fed
+// the same call sequence, one answering mutations with subtree renders and
+// one always rendering the document, must produce byte-identical quad
+// streams at every step. Byte equality is the whole claim -- the fast path
+// may only ever change how the answer is computed, never the answer.
+void test_subtree_relayout()
+{
+    std::printf("\n[subtree relayout]\n");
+
+    std::string rows;
+    for(int i = 0; i < 12; ++i)
+    {
+        rows += "<div id='r" + std::to_string(i) + "' style='height:30px'><span id='t" + std::to_string(i) +
+                "'>row " + std::to_string(i) + "</span></div>";
+    }
+
+    const std::string html = "<body style='margin:0;background:#101418'>"
+                             "<div style='height:40px;background:#222833'>header</div>"
+                             "<div id='list' style='height:200px;overflow:auto'>" +
+                             rows +
+                             "</div>"
+                             "<div id='g'><span id='gt'>short</span></div>"
+                             "<div style='height:40px;background:#222833'>footer</div></body>";
+
+    Fixture on, off;
+    lhu_exp_sublayout_set_enabled(off.ctx, 0);
+
+    on.render(html.c_str(), 300.f, 400.f);
+    off.render(html.c_str(), 300.f, 400.f);
+
+    const auto step = [&](const char* what, const std::function<void(LhuContext*)>& mutate) {
+        mutate(on.ctx);
+        mutate(off.ctx);
+        lhu_layout(on.ctx, 300.f);
+        lhu_layout(off.ctx, 300.f);
+        LhuFrame fa {}, fb {};
+        lhu_record(on.ctx, &fa);
+        lhu_record(off.ctx, &fb);
+        const bool same = fa.quad_count == fb.quad_count &&
+                          std::memcmp(fa.quads, fb.quads, sizeof(LhuQuad) * fa.quad_count) == 0 &&
+                          fa.doc_height == fb.doc_height;
+        check(same, what);
+    };
+
+    // A glyph-count change inside a fixed-height row: the case E1 cannot skip
+    // and E8 exists for.
+    step("a text of a different length lays out identically through the subtree",
+         [](LhuContext* c) { lhu_set_text(c, "#t3", "different words here"); });
+
+    step("a digit gaining a digit does too",
+         [](LhuContext* c) { lhu_set_text(c, "#t5", "12345"); });
+
+    // Same width in ahem: E1's skip answers on both contexts.
+    step("a same-width change stays the skip it always was",
+         [](LhuContext* c) { lhu_set_text(c, "#t5", "54321"); });
+
+    // Text that wraps to a second line inside a FIXED-height row: content
+    // overflows, the footprint does not, the subtree answer must still match.
+    step("a wrap inside a fixed-height row matches",
+         [](LhuContext* c) { lhu_set_text(c, "#t7", "words that will surely wrap onto another line"); });
+
+    // An inline style edit, same confinement.
+    step("an inline style recolour matches",
+         [](LhuContext* c) { lhu_set_style(c, "#t4", "color:#ff4444"); });
+
+    // A row that GROWS (auto height): the footprint moves, the subtree answer
+    // is refused, and the fallback must still be byte-identical.
+    step("a growing block falls back to the full render and matches",
+         [](LhuContext* c) { lhu_set_text(c, "#gt", "now this text is long enough to wrap and grow the box"); });
+
+    // A scroll in the same frame as a mutation: the scroll's invalidation
+    // must win (it dirties more than one subtree).
+    step("scroll plus mutation in one frame matches", [](LhuContext* c) {
+        lhu_scroll(c, 0.f, 40.f, 150.f, 140.f);
+        lhu_set_text(c, "#t2", "changed mid scroll");
+    });
+
+    int32_t subs = 0, falls = 0;
+    lhu_exp_sublayout_stats(on.ctx, nullptr, &subs, &falls);
+    check(subs >= 4, "the confined mutations were answered by subtree renders");
+    check(falls >= 1, "and the grower fell back");
+
+    int32_t subs_off = 0;
+    lhu_exp_sublayout_stats(off.ctx, nullptr, &subs_off, nullptr);
+    check(subs_off == 0, "the control context never took the fast path");
+
+    // The dangerous shapes: ancestors that read intrinsic widths from below.
+    // A flex row re-distributes when an item's natural width changes even if
+    // the item's assigned box does not, so the guard must refuse it -- and
+    // the A/B equality is what proves the guard is load-bearing.
+    {
+        const char* flex_html = "<body style='margin:0'>"
+                                "<div style='display:flex'>"
+                                "<div id='fa'>aa</div><div id='fb'>bb</div>"
+                                "</div></body>";
+        Fixture fon, foff;
+        lhu_exp_sublayout_set_enabled(foff.ctx, 0);
+        fon.render(flex_html, 300.f, 200.f);
+        foff.render(flex_html, 300.f, 200.f);
+
+        lhu_set_text(fon.ctx, "#fa", "aaaaaaaa");
+        lhu_set_text(foff.ctx, "#fa", "aaaaaaaa");
+        lhu_layout(fon.ctx, 300.f);
+        lhu_layout(foff.ctx, 300.f);
+
+        LhuFrame fa {}, fb {};
+        lhu_record(fon.ctx, &fa);
+        lhu_record(foff.ctx, &fb);
+        check(fa.quad_count == fb.quad_count &&
+                  std::memcmp(fa.quads, fb.quads, sizeof(LhuQuad) * fa.quad_count) == 0,
+              "a flex ancestor is refused and the page still matches");
+
+        int32_t fsubs = 0;
+        lhu_exp_sublayout_stats(fon.ctx, nullptr, &fsubs, nullptr);
+        check(fsubs == 0, "no subtree render fired under a flex ancestor");
+    }
+
+    // Floats leak across formatting contexts; a document with any float is
+    // out wholesale.
+    {
+        const char* float_html = "<body style='margin:0'>"
+                                 "<div style='float:left;width:80px;height:40px;background:#333'></div>"
+                                 "<div id='fl'>beside the float</div></body>";
+        Fixture fon;
+        fon.render(float_html, 300.f, 200.f);
+        lhu_set_text(fon.ctx, "#fl", "still beside, but longer now");
+        lhu_layout(fon.ctx, 300.f);
+
+        int32_t fsubs = 0;
+        lhu_exp_sublayout_stats(fon.ctx, nullptr, &fsubs, nullptr);
+        check(fsubs == 0, "a document with a float never takes the fast path");
+    }
+
+    // Scrolling still works after a subtree render: the list's scroll range
+    // must reflect the tree the fast path left behind.
+    {
+        Fixture sv;
+        sv.render(html.c_str(), 300.f, 400.f);
+        lhu_set_text(sv.ctx, "#t1", "mutated before scrolling");
+        lhu_layout(sv.ctx, 300.f);
+
+        int32_t subs2 = 0;
+        lhu_exp_sublayout_stats(sv.ctx, nullptr, &subs2, nullptr);
+        check(subs2 == 1, "the mutation was answered by a subtree render");
+        check(lhu_scroll(sv.ctx, 0.f, 60.f, 150.f, 140.f) > 0, "and the list still scrolls after it");
+
+        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+        lhu_element_rect(sv.ctx, "#r5", &x, &y, &w, &h);
+        check_near(y, 40.f + 5 * 30.f - 60.f, 0.5f, "by the full sixty pixels");
+    }
+
+    // The host re-sends the device scale before every layout. An identical
+    // value must change nothing -- the unguarded version invalidated the
+    // layout and the whole quad cache once per frame, which quietly disarmed
+    // every fast path on the device while the desktop probes stayed green.
+    {
+        Fixture ds;
+        ds.render(html.c_str(), 300.f, 400.f);
+        lhu_set_text(ds.ctx, "#t1", "mutated once");
+        lhu_set_device_scale(ds.ctx, 1.f); // identical to the default
+        lhu_layout(ds.ctx, 300.f);
+
+        int32_t subs3 = 0;
+        lhu_exp_sublayout_stats(ds.ctx, nullptr, &subs3, nullptr);
+        check(subs3 == 1, "a re-sent identical device scale does not disarm the subtree render");
+    }
+}
+
 // Input events must say WHAT they dirtied, not just that they did. A :hover
 // that recolours reports paint; a :hover that resizes reports layout too. The
 // host draws stale geometry if layout-dirty is under-reported, and pays a full
@@ -1266,6 +1434,7 @@ int main(int argc, char** argv)
     test_kern_cache();
     test_dirty_region();
     test_scroll_partial_redraw();
+    test_subtree_relayout();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
     test_demo_page();

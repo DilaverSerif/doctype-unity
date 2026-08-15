@@ -95,7 +95,21 @@ class Container : public litehtml::document_container
         return true;
     }
 
-    void set_device_scale(float s) { m_device_scale = s > 0.f ? s : 1.f; }
+    /// Returns false when the scale is already exactly this, for the same
+    /// reason set_viewport() does: the Unity side re-sends it on every layout,
+    /// and each false "change" would invalidate the layout and the whole
+    /// retained quad cache once per frame.
+    bool set_device_scale(float s)
+    {
+        s = s > 0.f ? s : 1.f;
+        if(m_device_scale == s)
+        {
+            return false;
+        }
+
+        m_device_scale = s;
+        return true;
+    }
 
     void set_default_font(const std::string& family, float size)
     {

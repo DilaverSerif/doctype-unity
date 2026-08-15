@@ -563,6 +563,17 @@ namespace litehtml
         return ret;
     }
 
+    // LHU PATCH (experiment E8, subtree relayout); see document.h.
+    void document::lhu_update_document_size()
+    {
+        if(m_root_render)
+        {
+            m_size.width  = 0;
+            m_size.height = 0;
+            m_root_render->calc_document_size(m_size);
+        }
+    }
+
     void document::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip)
     {
         if(m_root && m_root_render)

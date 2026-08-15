@@ -31,6 +31,15 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
                                                        const containing_block_context& containing_block_size,
                                                        formatting_context* fmt_ctx, bool second_pass)
 {
+    // LHU PATCH (experiment E8, subtree relayout). Capture this call's inputs
+    // so the host can replay it in isolation later. Parents that render a
+    // child more than once (measure passes) overwrite earlier captures, so
+    // what remains is the call that produced the final geometry.
+    lhu_last_cb   = containing_block_size;
+    lhu_last_x    = x;
+    lhu_last_y    = y;
+    lhu_rendered  = true;
+
     calc_outlines(containing_block_size.width);
 
     m_pos.clear();

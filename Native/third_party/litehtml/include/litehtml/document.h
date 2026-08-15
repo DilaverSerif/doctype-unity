@@ -144,6 +144,13 @@ namespace litehtml
         pixel_t                      height() const;
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
+
+        // LHU PATCH (experiment E8, subtree relayout). Recomputes the
+        // document size from the existing render tree without a layout pass.
+        // calc_document_size() also re-measures every scroll_view's content
+        // on the way, which is what keeps scrolling correct after a subtree
+        // was re-laid in place.
+        void                         lhu_update_document_size();
         void                         add_stylesheet(const char* str, const char* baseurl, const char* media);
         bool                         on_mouse_over(pixel_t x, pixel_t y, pixel_t client_x, pixel_t client_y,
                                                    const std::function<void(const position&)>& redraw_box);

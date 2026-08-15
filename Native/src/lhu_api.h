@@ -286,6 +286,29 @@ LHU_API void lhu_exp_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_s
 //     inside the noise; the cap is the damage.
 LHU_API void lhu_exp_setstyle_set_enabled(LhuContext* ctx, int32_t enabled);
 
+// --- experiment: subtree relayout (E8) ---------------------------------------
+//
+// litehtml has no incremental layout: document::render() visits every render
+// item, so the cost of a one-word text change scales with the page. When a
+// frame's only stale geometry is inside one element's subtree (lhu_set_text /
+// lhu_set_style track this), lhu_layout() re-lays just that element's nearest
+// block ancestor in place, with the containing-block inputs the last full
+// pass gave it, and keeps the result only if the block's outer footprint is
+// bit-identical to what it was -- plain in-flow blocks read nothing from a
+// subtree but its footprint, so an unmoved footprint proves the rest of the
+// page. Documents with floats or absolute/fixed positioning, mutations under
+// flex/table/inline-block ancestors, several mutated elements in one frame,
+// and any footprint that moved all fall back to the full render.
+//
+// Runtime-switchable for the same one-binary A/B reason as every experiment
+// here; the default comes from LHU_EXP_SUBLAYOUT ("0" disables).
+LHU_API void lhu_exp_sublayout_set_enabled(LhuContext* ctx, int32_t enabled);
+
+// How many lhu_layout() calls were answered by a subtree render, and how many
+// candidates had to fall back to a full one. Any pointer may be NULL.
+LHU_API void lhu_exp_sublayout_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_sub_layouts,
+                                     int32_t* out_fallbacks);
+
 // Reports the setting, how many lhu_set_style() calls actually changed
 // something, how many of those had to rebuild the render tree, and how many
 // entries the inline-style parse memo (E6) is currently holding -- the last one

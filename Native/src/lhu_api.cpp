@@ -143,6 +143,39 @@ struct LhuContext
     int32_t stat_style_applied = 0;
     int32_t stat_style_trees   = 0;
 
+    // --- subtree relayout state (experiment E8) ------------------------------
+    //
+    // When a mutation dirtied geometry inside exactly one element, that
+    // element is a CANDIDATE: lhu_layout() may re-lay just its nearest block
+    // ancestor in place and verify the footprint did not move, instead of
+    // rendering the document. Everything else that can invalidate layout goes
+    // through invalidate_layout(), which drops the candidate -- so a live
+    // candidate *means* "the only stale geometry is inside this subtree".
+    //
+    // doc_has_floats / doc_has_positioned are one-time facts about the loaded
+    // document: floats make formatting contexts leak across subtree edges,
+    // and absolutely positioned boxes are laid out by a separate document
+    // pass a subtree render does not run. Either one disarms E8 wholesale
+    // rather than reasoning about where they are.
+    bool                             exp_sublayout = true;
+    std::weak_ptr<litehtml::element> sublayout_candidate;
+    bool                             sublayout_multi   = false;
+    bool                             doc_has_floats     = false;
+    bool                             doc_has_positioned = false;
+    int32_t                          stat_sub_layouts   = 0;
+    int32_t                          stat_sub_fallbacks = 0;
+
+    void note_sublayout_candidate(const litehtml::element::ptr& el)
+    {
+        const auto current = sublayout_candidate.lock();
+        if(current && current != el)
+        {
+            sublayout_multi = true;
+            return;
+        }
+        sublayout_candidate = el;
+    }
+
     explicit LhuContext(const LhuHostCallbacks& host) :
         container(fonts, host),
         cache(container)
@@ -158,6 +191,9 @@ struct LhuContext
 
         const char* env_memo = std::getenv("LHU_SETSTYLE_MEMO");
         style_memoize_inline = env_memo && std::strcmp(env_memo, "0") != 0;
+
+        const char* env_sub = std::getenv("LHU_EXP_SUBLAYOUT");
+        exp_sublayout       = !(env_sub && std::strcmp(env_sub, "0") == 0);
 
         cache.set_enabled(quadcache_enabled_by_env());
     }
@@ -180,6 +216,12 @@ struct LhuContext
     {
         layout_clean     = false;
         pending_mutation = false;
+
+        // Whatever called this dirtied more than one element's subtree (a
+        // viewport, a scroll, a hover), so the candidate no longer describes
+        // all the stale geometry.
+        sublayout_candidate.reset();
+        sublayout_multi = false;
     }
 
     // Deliberately NOT folded into invalidate_layout(). The two experiments
@@ -386,10 +428,14 @@ void lhu_set_viewport(LhuContext* ctx, float width, float height)
 
 void lhu_set_device_scale(LhuContext* ctx, float scale)
 {
-    if(ctx)
+    // The same-value guard is load-bearing: the host re-sends the scale on
+    // every layout, and treating each of those as a change invalidated the
+    // layout AND the retained quad cache once per frame -- which quietly
+    // disarmed every layout fast path and made the cache rebuild 300 times
+    // per benchmark scenario. The stats column was saying so all along.
+    if(ctx && ctx->container.set_device_scale(scale))
     {
         ctx->invalidate_layout_and_cache();
-        ctx->container.set_device_scale(scale);
     }
 }
 
@@ -445,6 +491,29 @@ int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* user_css)
     // createFromString() computed every style against the viewport as it stands
     // now, so whatever marked them stale has just been answered.
     ctx->styles_stale = false;
+
+    // One-time facts the subtree relayout (E8) gates on; see LhuContext.
+    ctx->doc_has_floats     = false;
+    ctx->doc_has_positioned = false;
+    if(const auto root = ctx->doc->root())
+    {
+        const std::function<void(const litehtml::element::ptr&)> scan = [&](const litehtml::element::ptr& e) {
+            if(e->css().get_float() != litehtml::float_none)
+            {
+                ctx->doc_has_floats = true;
+            }
+            if(e->css().get_position() == litehtml::element_position_absolute ||
+               e->css().get_position() == litehtml::element_position_fixed)
+            {
+                ctx->doc_has_positioned = true;
+            }
+            for(const auto& c : e->children())
+            {
+                scan(c);
+            }
+        };
+        scan(root);
+    }
 
     ctx->last_error.clear();
     return 1;
@@ -617,6 +686,10 @@ int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8)
             // Fail closed: one node that moved is enough to make the whole
             // existing layout suspect, even if a hundred others did not.
             ctx->layout_clean = false;
+
+            // But the movement is confined to this element, which is exactly
+            // what the subtree relayout (E8) wants to know.
+            ctx->note_sublayout_candidate(el);
         }
 
         // Note the arming happens even when nothing changed. A UI that pushes
@@ -671,9 +744,12 @@ int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8)
     }
 
     // The render items themselves are new here: their m_pos has never been
-    // through a line box. There is no version of this that can skip a render.
+    // through a line box. There is no version of this that can skip a render,
+    // but the render can still be the subtree's alone (E8): the new items
+    // hang under the same element, and its block ancestor re-lays them.
     ctx->layout_clean     = false;
     ctx->pending_mutation = true;
+    ctx->note_sublayout_candidate(el);
 
     // The new render items carry dc_geom_valid == false, so the diff walk would
     // catch them anyway; mark explicitly rather than lean on that, because the
@@ -795,7 +871,8 @@ int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css)
     std::vector<StructuralKey> after;
     collect_structure(el, after);
 
-    if(structure_changed(before, after))
+    const bool rebuilt = structure_changed(before, after);
+    if(rebuilt)
     {
         // See structural_key(): the render tree's shape came from these values
         // and document::render() will not revisit it. Rebuilding is still far
@@ -834,8 +911,109 @@ int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css)
     // is not even a close call.
     ctx->invalidate_layout();
 
+    // ...but the render does not have to be the whole document's (E8): an
+    // inline-style edit restyles exactly this element's subtree, the same
+    // confinement lhu_set_text() proves for text. The candidate is handed
+    // back after the reset above; whatever the style did to the element's own
+    // box, the subtree render verifies the footprint and falls back if it
+    // moved. A rebuilt render tree stays a full render: every captured render
+    // input died with the old items.
+    if(!rebuilt)
+    {
+        ctx->note_sublayout_candidate(el);
+    }
+
     return 1;
 }
+
+namespace
+{
+// EXPERIMENT E8: re-lay one mutated subtree in place instead of rendering the
+// document. litehtml has no incremental layout, so a four-character text
+// change pays for every render item on the page; this buys the incremental
+// answer for the narrow case a HUD's frames actually consist of, and proves
+// it instead of assuming it. The candidate's nearest block ancestor is
+// re-rendered with the exact inputs the last full pass gave it (captured on
+// the render item), and the result only stands if the block's outer
+// footprint lands bit-identically where it was -- if so, nothing else on the
+// page could have moved, because plain in-flow blocks read nothing from a
+// subtree except its footprint. Every precondition that could break that
+// reasoning falls back to a full render, which is always correct.
+bool try_sublayout(LhuContext* ctx, const litehtml::element::ptr& mutated)
+{
+    // Facts that make subtree isolation unsound, checked once per document:
+    // floats leak across formatting-context edges, and absolutely positioned
+    // boxes are laid out by a separate document pass this path does not run.
+    if(ctx->doc_has_floats || ctx->doc_has_positioned)
+    {
+        return false;
+    }
+
+    // The box to re-lay: the nearest block-level ancestor with a rendered
+    // item. Inline elements flow through their parents' line boxes, so the
+    // block above them is the smallest thing that can be re-laid alone.
+    litehtml::element::ptr block = mutated;
+    while(block)
+    {
+        const litehtml::style_display d = block->css().get_display();
+        if((d == litehtml::display_block || d == litehtml::display_list_item) && block->get_render_item())
+        {
+            break;
+        }
+        block = block->parent();
+    }
+    if(!block)
+    {
+        return false;
+    }
+
+    const auto ri = block->get_render_item();
+    if(!ri || !ri->lhu_rendered)
+    {
+        return false;
+    }
+
+    // Every ancestor must be a plain in-flow block. Anything that sizes
+    // itself from its contents -- flex, tables, inline-blocks -- reads the
+    // subtree's intrinsic widths, and those can change even when the final
+    // footprint does not: the verification below would pass and the page
+    // would still be stale. Plain blocks read nothing from below except
+    // heights, which the footprint check covers.
+    for(litehtml::element::ptr a = block->parent(); a; a = a->parent())
+    {
+        const litehtml::style_display d = a->css().get_display();
+        if(d != litehtml::display_block && d != litehtml::display_list_item)
+        {
+            return false;
+        }
+    }
+
+    // Re-render in place, then require the outer footprint (margin box
+    // included) to land exactly where it was. If it moved, siblings move,
+    // and only a document render answers for them. The half-updated subtree
+    // this leaves behind is fine: the caller's full render overwrites it.
+    const litehtml::position before     = ri->pos();
+    const litehtml::pixel_t  before_l   = ri->left();
+    const litehtml::pixel_t  before_r   = ri->right();
+    const litehtml::pixel_t  before_t   = ri->top();
+    const litehtml::pixel_t  before_b   = ri->bottom();
+
+    ri->render(ri->lhu_last_x, ri->lhu_last_y, ri->lhu_last_cb, nullptr, false);
+
+    const litehtml::position& after = ri->pos();
+    if(after.x != before.x || after.y != before.y || after.width != before.width ||
+       after.height != before.height || ri->left() != before_l || ri->right() != before_r ||
+       ri->top() != before_t || ri->bottom() != before_b)
+    {
+        return false;
+    }
+
+    // A scroll view inside the subtree may hold more or less content now;
+    // this re-measures every one of them, and the document size with them.
+    ctx->doc->lhu_update_document_size();
+    return true;
+}
+} // namespace
 
 float lhu_layout(LhuContext* ctx, float max_width)
 {
@@ -868,6 +1046,11 @@ float lhu_layout(LhuContext* ctx, float max_width)
         // render has measured its content: the page scrolls, moves zero pixels,
         // and looks like the touch was ignored.
         ctx->layout_clean = false;
+
+        // The restyle above touched every element, so a candidate noted since
+        // the viewport change no longer bounds the stale geometry (E8).
+        ctx->sublayout_candidate.reset();
+        ctx->sublayout_multi = false;
     }
 
     if(ctx->exp_subtree && ctx->layout_clean && ctx->pending_mutation && max_width == ctx->layout_width)
@@ -882,6 +1065,28 @@ float lhu_layout(LhuContext* ctx, float max_width)
         return ctx->doc_height;
     }
 
+    // E8: when everything stale sits inside one candidate subtree (see
+    // LhuContext -- any wider invalidation dropped the candidate on its way
+    // through invalidate_layout()), try to re-lay just that. Same max_width
+    // only: a different width is a different layout, always.
+    if(ctx->exp_sublayout && !ctx->sublayout_multi && max_width == ctx->layout_width)
+    {
+        if(const auto el = ctx->sublayout_candidate.lock())
+        {
+            if(try_sublayout(ctx, el))
+            {
+                ctx->sublayout_candidate.reset();
+                ctx->doc_width        = static_cast<float>(ctx->doc->width());
+                ctx->doc_height       = static_cast<float>(ctx->doc->height());
+                ctx->layout_clean     = true;
+                ctx->pending_mutation = false;
+                ++ctx->stat_sub_layouts;
+                return ctx->doc_height;
+            }
+            ++ctx->stat_sub_fallbacks;
+        }
+    }
+
     ctx->doc->render(litehtml::pixel_t(max_width));
     ctx->doc_width  = static_cast<float>(ctx->doc->width());
     ctx->doc_height = static_cast<float>(ctx->doc->height());
@@ -889,6 +1094,8 @@ float lhu_layout(LhuContext* ctx, float max_width)
     ctx->layout_clean     = true;
     ctx->pending_mutation = false;
     ctx->layout_width     = max_width;
+    ctx->sublayout_candidate.reset();
+    ctx->sublayout_multi = false;
     ++ctx->stat_rendered;
 
     return ctx->doc_height;
@@ -2036,6 +2243,40 @@ void lhu_exp_setstyle_set_enabled(LhuContext* ctx, int32_t enabled)
     if(ctx)
     {
         ctx->exp_setstyle = enabled != 0;
+    }
+}
+
+void lhu_exp_sublayout_set_enabled(LhuContext* ctx, int32_t enabled)
+{
+    if(!ctx)
+    {
+        return;
+    }
+
+    ctx->exp_sublayout = enabled != 0;
+
+    // Turning it off must not leave a candidate armed, or the very next
+    // lhu_layout() after re-enabling would act on stale confinement.
+    if(!ctx->exp_sublayout)
+    {
+        ctx->sublayout_candidate.reset();
+        ctx->sublayout_multi = false;
+    }
+}
+
+void lhu_exp_sublayout_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_sub_layouts, int32_t* out_fallbacks)
+{
+    if(out_enabled)
+    {
+        *out_enabled = ctx && ctx->exp_sublayout ? 1 : 0;
+    }
+    if(out_sub_layouts)
+    {
+        *out_sub_layouts = ctx ? ctx->stat_sub_layouts : 0;
+    }
+    if(out_fallbacks)
+    {
+        *out_fallbacks = ctx ? ctx->stat_sub_fallbacks : 0;
     }
 }
 
