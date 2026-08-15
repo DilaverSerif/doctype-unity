@@ -109,7 +109,24 @@ typedef struct LhuFrame
     int32_t        grad_lut_w;
     int32_t        grad_lut_rows;
     int32_t        grad_lut_version;
+
+    // What changed since the previous recorded frame, so a host that keeps its
+    // render target alive can repaint just that. Encoded so that all-zero (a
+    // plugin older than this field, a zeroed struct) means "repaint everything":
+    //   LHU_DIRTY_MODE_FULL (0) -> repaint the whole target
+    //   LHU_DIRTY_MODE_NONE (1) -> byte-identical to the previous frame
+    //   LHU_DIRTY_MODE_RECT (2) -> only the rect below changed (document space,
+    //                              already padded for the antialiasing skirt)
+    int32_t dirty_mode;
+    float   dirty_x, dirty_y, dirty_w, dirty_h;
 } LhuFrame;
+
+enum LhuDirtyMode
+{
+    LHU_DIRTY_MODE_FULL = 0,
+    LHU_DIRTY_MODE_NONE = 1,
+    LHU_DIRTY_MODE_RECT = 2,
+};
 
 // Callbacks the host (Unity) provides so the engine can resolve external
 // resources. All strings are UTF-8 and only valid for the duration of the call.

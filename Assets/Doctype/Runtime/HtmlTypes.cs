@@ -138,6 +138,31 @@ namespace Doctype
         public int GradLutWidth;
         public int GradLutRows;
         public int GradLutVersion;
+
+        // What changed since the previous recorded frame, so the renderer can
+        // repaint just that. All-zero decodes as "repaint everything", which is
+        // also what a plugin older than these fields leaves behind.
+        public HtmlDirtyMode DirtyMode;
+        public float DirtyX;
+        public float DirtyY;
+        public float DirtyW;
+        public float DirtyH;
+    }
+
+    /// <summary>
+    /// Mirrors <c>LhuDirtyMode</c> in Native/src/lhu_types.h; the values are
+    /// part of the ABI.
+    /// </summary>
+    public enum HtmlDirtyMode
+    {
+        /// <summary>Repaint the whole target.</summary>
+        Full = 0,
+
+        /// <summary>Byte-identical to the previous frame; nothing to draw.</summary>
+        None = 1,
+
+        /// <summary>Only the rect changed (document space, already padded).</summary>
+        Rect = 2,
     }
 
     // Delegates matching LhuHostCallbacks. Every implementation passed to native

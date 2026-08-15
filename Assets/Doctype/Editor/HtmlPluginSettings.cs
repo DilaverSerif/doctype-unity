@@ -65,6 +65,7 @@ namespace Doctype.EditorTools
         {
             "Doctype/Quad",
             "Doctype/Composite",
+            "Doctype/RegionClear",
         };
 
         /// <summary>Adds the runtime shaders to Graphics Settings if missing.</summary>

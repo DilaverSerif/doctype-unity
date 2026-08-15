@@ -64,6 +64,7 @@ namespace Doctype
         private HtmlDocument _document;
         private HtmlRenderer _renderer;
         private RenderTexture _target;
+        private Color _lastBackground;
 
         // Parsing, laying out and drawing are tracked separately: re-parsing on
         // every resize would be wasteful and would also drop hover/active state.
@@ -128,6 +129,12 @@ namespace Doctype
 
         /// <summary>Quads drawn in the last frame — a direct measure of GPU cost.</summary>
         public int QuadCount => _renderer?.LastQuadCount ?? 0;
+
+        /// <summary>How much of the surface the last render repainted.</summary>
+        public HtmlDirtyMode LastDirtyMode => _renderer?.LastDirtyMode ?? HtmlDirtyMode.Full;
+
+        /// <summary>Pixels the last partial repaint touched, for instrumentation.</summary>
+        public RectInt LastDirtyPixels => _renderer?.LastDirtyPixels ?? default;
 
         /// <summary>
         /// One of the native retained display list's counters, or -1 when there
@@ -718,11 +725,15 @@ namespace Doctype
             return documentHeight;
         }
 
-        private void EnsureTarget()
+        /// <summary>
+        /// Returns true when the surface was (re)created, because a fresh
+        /// target holds garbage where the renderer expects the previous frame.
+        /// </summary>
+        private bool EnsureTarget()
         {
             if (_target != null && _target.width == _size.x && _target.height == _size.y)
             {
-                return;
+                return false;
             }
 
             if (_target != null)
@@ -745,6 +756,7 @@ namespace Doctype
             };
 
             _target.Create();
+            return true;
         }
 
         private void RunRender()
@@ -756,7 +768,24 @@ namespace Doctype
 
             _needsRender = false;
 
-            EnsureTarget();
+            // Partial repaint leans on the target still holding the previous
+            // frame. A recreated target holds garbage, a target the platform
+            // discarded (Android after an app pause) holds less than that, and
+            // a changed background falsifies every pixel outside the dirty
+            // rect -- each of those forces one full repaint.
+            bool forceFull = EnsureTarget();
+
+            if (!_target.IsCreated())
+            {
+                _target.Create();
+                forceFull = true;
+            }
+
+            if (_background != _lastBackground)
+            {
+                _lastBackground = _background;
+                forceFull = true;
+            }
 
             _stopwatch.Restart();
 
@@ -768,7 +797,7 @@ namespace Doctype
             var documentSize = new Vector2(_size.x / _deviceScale, _size.y / _deviceScale);
 
             _renderer.Render(quads, frame, _target, _background, documentSize,
-                             _document.Resources?.ImageAtlas);
+                             _document.Resources?.ImageAtlas, forceFull);
 
             FontAtlasSize = new Vector2Int(frame.FontAtlasWidth, frame.FontAtlasHeight);
 

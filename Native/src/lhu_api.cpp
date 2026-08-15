@@ -74,6 +74,25 @@ struct LhuContext
     int32_t stat_skipped     = 0;
     int32_t stat_rendered    = 0;
 
+    // --- dirty region --------------------------------------------------------
+    //
+    // A copy of the last recorded frame, kept so lhu_record can say which part
+    // of the new one actually differs. A copy rather than a pointer into the
+    // container's buffer, because the next record overwrites that buffer in
+    // place. ~150 KB for a busy page; the GPU work it saves is measured in
+    // milliseconds per frame.
+    std::vector<LhuQuad>  prev_quads;
+    std::vector<uint8_t>  prev_grad_lut;
+    float                 prev_doc_w = -1.f;
+    float                 prev_doc_h = -1.f;
+    bool                  have_prev_frame = false;
+
+    // The one change the byte-diff cannot see: the host saying its image atlas
+    // texels moved under UVs that stayed put (LHU_QC_INVALIDATE). Everything
+    // else -- restyles, rebuilds, atlas repacks -- lands in the quad bytes and
+    // the diff catches it on its own.
+    bool                  dirty_suspect = false;
+
     // --- retained display list state (experiment E2) -------------------------
     //
     // atlas_epoch  the last font-atlas epoch the cache was reconciled with. A
@@ -849,6 +868,147 @@ float lhu_layout(LhuContext* ctx, float max_width)
     return ctx->doc_height;
 }
 
+namespace
+{
+// Union of the pixels a quad can touch: its rect intersected with its clip
+// (both axis-aligned; the rounded corners only shrink the area, so this is a
+// superset of what is painted -- which is the safe direction for a dirty rect).
+struct DirtyBounds
+{
+    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+    bool  any = false;
+
+    void add(const LhuQuad& q)
+    {
+        float qx0 = q.x, qy0 = q.y, qx1 = q.x + q.w, qy1 = q.y + q.h;
+
+        if(q.clip_w > 0.f && q.clip_h > 0.f)
+        {
+            qx0 = std::max(qx0, q.clip_x);
+            qy0 = std::max(qy0, q.clip_y);
+            qx1 = std::min(qx1, q.clip_x + q.clip_w);
+            qy1 = std::min(qy1, q.clip_y + q.clip_h);
+        }
+
+        if(qx1 <= qx0 || qy1 <= qy0)
+        {
+            return; // clipped away entirely; it paints nothing
+        }
+
+        if(!any)
+        {
+            x0 = qx0; y0 = qy0; x1 = qx1; y1 = qy1;
+            any = true;
+        } else
+        {
+            x0 = std::min(x0, qx0);
+            y0 = std::min(y0, qy0);
+            x1 = std::max(x1, qx1);
+            y1 = std::max(y1, qy1);
+        }
+    }
+};
+
+// Fills out->dirty_* by diffing this frame against the previous recorded one.
+//
+// The diff is prefix/suffix rather than pairwise: a text that gains a digit
+// inserts a quad, and pairwise comparison would then see every later quad as
+// "different" and dirty the rest of the page. Common prefix + common suffix
+// isolates the changed span in both frames instead, exactly and in O(n).
+//
+// `trusted` is false when the record was a full rebuild or the cache is off:
+// then the stream can differ for reasons the diff cannot see (an atlas repack
+// moving texels under identical UVs, an image edited in place), so the only
+// honest answer is "repaint everything".
+void compute_dirty_region(LhuContext* ctx, LhuFrame* out, bool trusted)
+{
+    out->dirty_mode = LHU_DIRTY_MODE_FULL;
+
+    const bool comparable = trusted && ctx->have_prev_frame &&
+                            ctx->prev_doc_w == out->doc_width && ctx->prev_doc_h == out->doc_height;
+
+    const std::vector<LhuQuad>& now  = ctx->container.quads();
+    const std::vector<LhuQuad>& then = ctx->prev_quads;
+
+    if(comparable)
+    {
+        const size_t n_now = now.size(), n_then = then.size();
+        const size_t n_min = std::min(n_now, n_then);
+
+        size_t prefix = 0;
+        while(prefix < n_min && std::memcmp(&now[prefix], &then[prefix], sizeof(LhuQuad)) == 0)
+        {
+            ++prefix;
+        }
+
+        size_t suffix = 0;
+        while(suffix < n_min - prefix &&
+              std::memcmp(&now[n_now - 1 - suffix], &then[n_then - 1 - suffix], sizeof(LhuQuad)) == 0)
+        {
+            ++suffix;
+        }
+
+        DirtyBounds bounds;
+        for(size_t i = prefix; i < n_then - suffix; ++i)
+        {
+            bounds.add(then[i]); // where the old content was
+        }
+        for(size_t i = prefix; i < n_now - suffix; ++i)
+        {
+            bounds.add(now[i]); // where the new content is
+        }
+
+        // A gradient's stops live in the LUT, not in the quad, so a stop can
+        // change under a byte-identical quad. If the LUT moved, every gradient
+        // in either frame is suspect.
+        const auto& lut = ctx->container.grad_lut();
+        if(lut != ctx->prev_grad_lut)
+        {
+            for(const LhuQuad& q : then)
+            {
+                if(q.type >= LHU_QUAD_LINEAR_GRAD) { bounds.add(q); }
+            }
+            for(const LhuQuad& q : now)
+            {
+                if(q.type >= LHU_QUAD_LINEAR_GRAD) { bounds.add(q); }
+            }
+        }
+
+        if(!bounds.any)
+        {
+            out->dirty_mode = LHU_DIRTY_MODE_NONE;
+        } else
+        {
+            // The mesh grows every quad by an antialiasing skirt and the shader
+            // feathers up to a pixel beyond that; four document units cover both
+            // with room to spare.
+            const float pad = 4.f;
+
+            const float x0 = std::max(0.f, bounds.x0 - pad);
+            const float y0 = std::max(0.f, bounds.y0 - pad);
+            const float x1 = std::min(out->doc_width, bounds.x1 + pad);
+            const float y1 = std::min(out->doc_height, bounds.y1 + pad);
+
+            out->dirty_mode = LHU_DIRTY_MODE_RECT;
+            out->dirty_x    = x0;
+            out->dirty_y    = y0;
+            out->dirty_w    = std::max(0.f, x1 - x0);
+            out->dirty_h    = std::max(0.f, y1 - y0);
+        }
+    }
+
+    // NONE means the buffer still equals prev_quads; skip the copy.
+    if(out->dirty_mode != LHU_DIRTY_MODE_NONE)
+    {
+        ctx->prev_quads.assign(now.begin(), now.end());
+        ctx->prev_grad_lut = ctx->container.grad_lut();
+        ctx->prev_doc_w    = out->doc_width;
+        ctx->prev_doc_h    = out->doc_height;
+        ctx->have_prev_frame = true;
+    }
+}
+} // namespace
+
 void lhu_record(LhuContext* ctx, LhuFrame* out)
 {
     if(!out)
@@ -862,6 +1022,13 @@ void lhu_record(LhuContext* ctx, LhuFrame* out)
     {
         return;
     }
+
+    // The diff compares the emitted bytes, so it does not care WHY this record
+    // ran -- a health-driven rebuild re-emits the same bytes for unchanged
+    // content and diffs to nothing. Only a host invalidate poisons it (see
+    // dirty_suspect), and only until the next record has rebuilt the baseline.
+    const bool dirty_diff_trusted = !ctx->dirty_suspect;
+    ctx->dirty_suspect = false;
 
     if(ctx->doc)
     {
@@ -959,6 +1126,8 @@ void lhu_record(LhuContext* ctx, LhuFrame* out)
     out->grad_lut_w        = lhu::Container::kGradLutWidth;
     out->grad_lut_rows     = ctx->container.grad_lut_rows();
     out->grad_lut_version  = ctx->container.grad_lut_version();
+
+    compute_dirty_region(ctx, out, dirty_diff_trusted);
 }
 
 namespace
@@ -1319,7 +1488,10 @@ int64_t lhu_quadcache_stat(LhuContext* ctx, int32_t which)
     case LHU_QC_FRAMES_PARTIAL: return ctx->cache.frames_partial();
     case LHU_QC_RESET:          ctx->cache.reset_stats(); return 0;
     case LHU_QC_BYTES:          return ctx->cache.bytes();
-    case LHU_QC_INVALIDATE:     ctx->cache.invalidate_all(); return 0;
+    case LHU_QC_INVALIDATE:
+        ctx->cache.invalidate_all();
+        ctx->dirty_suspect = true;
+        return 0;
     default:                    return -1;
     }
 }

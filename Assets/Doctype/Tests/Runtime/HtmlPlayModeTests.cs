@@ -309,5 +309,59 @@ namespace Doctype.Tests
             Assert.AreEqual(100f, after.width, 0.5f, "and it snaps back on exit");
         }
 
+
+        /// <summary>
+        /// Partial redraw, end to end: a style change repaints its own rect and
+        /// leaves every other pixel of the retained frame untouched.
+        /// </summary>
+        /// <remarks>
+        /// The two colour reads carry the weight. The bottom band turning blue
+        /// proves the scissor landed on the right rows (a y-flip bug scissors
+        /// the repaint into the wrong half, and the band stays green); the top
+        /// band still being red proves the pass did not clear the rest of the
+        /// target on its way through.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator PartialRedrawRepaintsOnlyTheDirtyRect()
+        {
+            _view.SetSize(300, 300);
+            // Geometry lives in the stylesheet on purpose: SetStyle REPLACES the
+            // inline style attribute, so sizing an element inline and then
+            // setting only its background would also throw its size away.
+            _view.LoadHtml("<body style='margin:0'><style>" +
+                           "#top { width:300px; height:100px; background:#ff0000; }" +
+                           "#gap { height:100px; }" +
+                           "#bottom { width:300px; height:100px; background:#00ff00; }" +
+                           "</style>" +
+                           "<div id='top'></div><div id='gap'></div><div id='bottom'></div>" +
+                           "</body>");
+            yield return WaitForRender();
+
+            Assert.AreEqual(HtmlDirtyMode.Full, _view.LastDirtyMode, "the first paint is full");
+            Assert.AreEqual(255, Sample(150, 50).r, 3, "top band painted red");
+            Assert.AreEqual(255, Sample(150, 250).g, 3, "bottom band painted green");
+
+            _view.SetStyle("#bottom", "background:#0000ff");
+            yield return WaitForRender();
+
+            Assert.AreEqual(HtmlDirtyMode.Rect, _view.LastDirtyMode,
+                            "a one-element style change repaints a rect, not the page");
+
+            RectInt px = _view.LastDirtyPixels;
+            Assert.Greater(px.yMin, 150, "the rect starts below the untouched bands");
+            Assert.Less(px.height, 150, "and covers the changed element, not the page");
+
+            Color32 bottom = Sample(150, 250);
+            Assert.AreEqual(255, bottom.b, 3, "the changed band was repainted in place");
+            Assert.AreEqual(0, bottom.g, 3, "and the old colour is gone");
+
+            Color32 top = Sample(150, 50);
+            Assert.AreEqual(255, top.r, 3, "the untouched band kept its pixels");
+
+            // And a frame with no change at all leaves the target alone.
+            yield return WaitForRender();
+            Assert.AreEqual(255, Sample(150, 250).b, 3, "the repainted band survives idle frames");
+        }
+
     }
 }

@@ -818,6 +818,79 @@ void test_demo_page()
 }
 
 
+
+// The frame diff behind partial redraw. Wrong-side errors here are not equal:
+// an under-reported rect leaves stale pixels on screen, an over-reported one
+// merely wastes fill -- so the tests pin containment (the changed element is
+// inside the rect) and boundedness (the rect is nowhere near the whole page).
+void test_dirty_region()
+{
+    std::printf("\n[dirty region]\n");
+
+    const char* html = R"HTML(
+<html><head><style>
+  body { margin:0; background:#101418; }
+  .row { height:40px; background:#222833; margin:8px; }
+</style></head><body>
+  <div class="row" id="r0"><span id="t0">alpha</span></div>
+  <div class="row" id="r1"><span id="t1">bravo</span></div>
+  <div class="row" id="r2"><span id="t2">charlie</span></div>
+  <div class="row" id="r3"><span id="t3">delta</span></div>
+  <div class="row" id="r4"><span id="t4">echo</span></div>
+</body></html>)HTML";
+
+    Fixture fx(false);
+    lhu_set_viewport(fx.ctx, 400.f, 400.f);
+    lhu_load_html(fx.ctx, html, nullptr);
+    lhu_layout(fx.ctx, 400.f);
+
+    LhuFrame f {};
+    lhu_record(fx.ctx, &f);
+    check(f.dirty_mode == LHU_DIRTY_MODE_FULL, "the first frame repaints everything");
+
+    lhu_record(fx.ctx, &f);
+    check(f.dirty_mode == LHU_DIRTY_MODE_NONE, "an unchanged frame reports nothing to do");
+
+    // One text in the middle of the page changes, same glyph count.
+    lhu_set_text(fx.ctx, "#t2", "quebec!");
+    lhu_layout(fx.ctx, 400.f);
+    lhu_record(fx.ctx, &f);
+
+    float rx = 0.f, ry = 0.f, rw = 0.f, rh = 0.f;
+    lhu_element_rect(fx.ctx, "#t2", &rx, &ry, &rw, &rh);
+
+    check(f.dirty_mode == LHU_DIRTY_MODE_RECT, "a text change reports a rect");
+    check(f.dirty_x <= rx && f.dirty_y <= ry && f.dirty_x + f.dirty_w >= rx + rw &&
+              f.dirty_y + f.dirty_h >= ry + rh,
+          "the rect contains the changed element");
+    check(f.dirty_h < 200.f, "and stays far from the whole page");
+    check(f.dirty_y > 60.f, "rows above the change are outside it");
+
+    // A text that changes glyph COUNT inserts quads. Pairwise diffing would
+    // smear the dirt over everything after the insertion point; the
+    // prefix/suffix diff must keep it local.
+    lhu_set_text(fx.ctx, "#t1", "a much longer line than before");
+    lhu_layout(fx.ctx, 400.f);
+    lhu_record(fx.ctx, &f);
+
+    lhu_element_rect(fx.ctx, "#t1", &rx, &ry, &rw, &rh);
+    check(f.dirty_mode == LHU_DIRTY_MODE_RECT, "a glyph-count change still reports a rect");
+    check(f.dirty_y <= ry && f.dirty_y + f.dirty_h >= ry + rh, "which contains the reflowed text");
+    check(f.dirty_h < 200.f, "without smearing over the rows after it");
+
+    // A hover recolour goes through the cache's styles_changed path.
+    lhu_mouse_move(fx.ctx, 200.f, 30.f);
+    lhu_layout(fx.ctx, 400.f);
+    lhu_record(fx.ctx, &f);
+    check(f.dirty_mode != LHU_DIRTY_MODE_FULL, "hover does not repaint the page");
+
+    // A viewport change moves everything and must not pretend otherwise.
+    lhu_set_viewport(fx.ctx, 380.f, 400.f);
+    lhu_layout(fx.ctx, 380.f);
+    lhu_record(fx.ctx, &f);
+    check(f.dirty_mode == LHU_DIRTY_MODE_FULL, "a resize repaints everything");
+}
+
 // Input events must say WHAT they dirtied, not just that they did. A :hover
 // that recolours reports paint; a :hover that resizes reports layout too. The
 // host draws stale geometry if layout-dirty is under-reported, and pays a full
@@ -975,6 +1048,7 @@ int main(int argc, char** argv)
     test_radial_conic();
     test_glyph_cache_churn();
     test_kern_cache();
+    test_dirty_region();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
     test_demo_page();
