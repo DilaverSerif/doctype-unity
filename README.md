@@ -125,14 +125,14 @@ size of a real HUD panel.
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
 | no HUD at all | 0 | 0.00 | 2.71 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.11** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.59** | **0** |
-| one text node changed per frame | 383 | 1.97 | **3.36** | 224 |
-| one inline style changed per frame | 383 | 1.74 | **4.10** | 217 |
-| scrolled every frame | 410 | 1.32 | 21.39 | 240 |
-| resized every frame | 412 | 4.53 | 21.80 | 241 |
-| re-parsed every frame | 384 | 12.39 | **6.17** | 225 |
-| four panels, one text node each | 1532 | 7.20 | **5.14** | 3591 |
+| HUD up, nothing changing | 381 | **0.00** | **3.17** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.62** | **0** |
+| one text node changed per frame | 383 | 1.93 | **3.34** | 171 |
+| one inline style changed per frame | 383 | 1.70 | **4.12** | 165 |
+| scrolled every frame | 410 | 1.32 | 21.39 | 183 |
+| resized every frame | 412 | 4.56 | 21.78 | 183 |
+| re-parsed every frame | 384 | 12.58 | **6.20** | 171 |
+| four panels, one text node each | 1532 | 7.17 | **5.11** | 2729 |
 
 ### A HUD that is not changing is free
 
@@ -168,11 +168,16 @@ consistent **14% off every redraw scenario** (24.4 → 21.1 ms on one panel,
 36.3 → 31.8 on four). One `pow` per channel, measured at three milliseconds a
 frame on this phone.
 
-Two things follow. The 3.6 MB of vertex data a four-panel HUD re-uploads every
-frame is **not** the bottleneck: it costs CPU time (~3 ms of mesh building) and
-nothing measurable on the GPU. And `RenderScale`, which exists on
-`HtmlRawImage`, turns out to be a shipping-grade optimisation and not just a
-measurement knob: half resolution, 3.5× cheaper, softer text.
+Two things follow. Vertex bandwidth is **not** the bottleneck, and that has
+since been tested directly rather than inferred: putting the vertex on a diet
+from 144 to 108 bytes (half-precision radii, border widths and clip radii,
+which are small lengths where float16 is exact to a fraction of a pixel, and an
+implied z) cut a four-panel HUD's upload from 3.6 MB to 2.7 MB per frame and
+moved neither the CPU nor the GPU column by a measurable amount. The smaller
+vertex stays because it costs nothing, but the win was never there. And
+`RenderScale`, which exists on `HtmlRawImage`, turns out to be a shipping-grade
+optimisation and not just a measurement knob: half resolution, 3.5× cheaper,
+softer text.
 
 ### Redraw only the pixels that changed
 
@@ -197,12 +202,12 @@ The GPU column in the first table shows what that buys on this phone:
   panel really does move.
 
 One consequence: `RenderScale` used to be the big lever, and now it only
-matters for full redraws. A mutating panel at half resolution measures 3.28 ms
-against 3.36 at full, because the dirty region is small either way.
+matters for full redraws. A mutating panel at half resolution measures 3.19 ms
+against 3.34 at full, because the dirty region is small either way.
 
 ### Re-parsing is the expensive thing, so don't
 
-Rebuilding a document from a string costs 12.4 ms of CPU, of which **10.8 ms is
+Rebuilding a document from a string costs 12.6 ms of CPU, of which **10.9 ms is
 parsing**, and most of that is litehtml re-parsing its own default stylesheet,
 a fixed price per document regardless of page size. Two things take it off the
 table: a trimmed master stylesheet for game UI (~2.4× faster document creation),

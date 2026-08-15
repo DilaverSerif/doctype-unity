@@ -778,12 +778,14 @@ namespace Doctype.Samples
 
         /// <summary>
         /// Bytes the mesh re-uploads on one render. Not measured — derived,
-        /// because it is exactly determined: every quad is four 144-byte
-        /// vertices and six 32-bit indices, and the whole buffer goes up every
-        /// time. Multiply by renders-per-frame for what a frame actually costs;
-        /// an idle HUD renders zero times and uploads nothing.
+        /// because it is exactly determined: every quad is four vertices of
+        /// <see cref="HtmlMeshBuilder.BytesPerVertex"/> bytes and six 32-bit
+        /// indices, and the whole buffer goes up every time. Multiply by
+        /// renders-per-frame for what a frame actually costs; an idle HUD
+        /// renders zero times and uploads nothing.
         /// </summary>
-        static float VertexKb(int quads) => quads * (4 * 144 + 6 * 4) / 1024f;
+        static float VertexKb(int quads) =>
+            quads * (4 * HtmlMeshBuilder.BytesPerVertex + 6 * 4) / 1024f;
 
         static string F(float v) =>
             v < 0f ? "n/a" : v.ToString("0.00", CultureInfo.InvariantCulture);

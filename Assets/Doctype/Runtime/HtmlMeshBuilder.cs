@@ -18,35 +18,69 @@ namespace Doctype
     public sealed class HtmlMeshBuilder : IDisposable
     {
         /// <summary>
-        /// Vertex layout. 144 bytes: fat, but it keeps everything in one batch
+        /// Bytes per vertex. The benchmark derives its bandwidth column from
+        /// this, so it must match <see cref="Vertex"/> exactly.
+        /// </summary>
+        public const int BytesPerVertex = 108;
+
+        /// <summary>
+        /// Four half-precision floats, written with <see cref="Mathf.FloatToHalf"/>.
+        /// The GPU expands them back to float4; the shader never notices.
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Half4
+        {
+            public ushort X, Y, Z, W;
+
+            public Half4(float x, float y, float z, float w)
+            {
+                X = Mathf.FloatToHalf(x);
+                Y = Mathf.FloatToHalf(y);
+                Z = Mathf.FloatToHalf(z);
+                W = Mathf.FloatToHalf(w);
+            }
+        }
+
+        /// <summary>
+        /// Vertex layout. 108 bytes: fat, but it keeps everything in one batch
         /// and avoids needing structured buffers (which GLES3 lacks).
         /// </summary>
+        /// <remarks>
+        /// What is half and what is full precision is deliberate. Radii, border
+        /// widths and clip corner radii are small lengths (rarely above a few
+        /// hundred CSS pixels), where float16 is exact to a fraction of a pixel.
+        /// Positions, rects, clip rects, atlas UVs and gradient geometry span
+        /// the whole document or atlas, where float16 resolution (1 part in
+        /// 2048) would visibly move SDF edges and glyph samples, so they stay
+        /// float32. Position z is implied: the attribute is two floats and the
+        /// GPU fills in z = 0, w = 1.
+        /// </remarks>
         [StructLayout(LayoutKind.Sequential)]
         private struct Vertex
         {
-            public Vector3 Position; // document space, y down
+            public Vector2 Position; // document space, y down
             public Color32 Color;
             public Vector4 Uv;       // u, v, type, gradient row
             public Vector4 Rect;     // centre xy, half-size xy
-            public Vector4 RadiusX;  // per corner: tl, tr, br, bl
-            public Vector4 RadiusY;
-            public Vector4 Border;   // left, top, right, bottom
+            public Half4 RadiusX;    // per corner: tl, tr, br, bl
+            public Half4 RadiusY;
+            public Half4 Border;     // left, top, right, bottom
             public Vector4 Clip;     // centre xy, half-size xy (x < 0 => unclipped)
-            public Vector4 ClipR;    // per corner
+            public Half4 ClipR;      // per corner
             public Vector4 Params;   // border edge index / gradient geometry
         }
 
         private static readonly VertexAttributeDescriptor[] Layout =
         {
-            new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
+            new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 2),
             new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.UNorm8, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord1, VertexAttributeFormat.Float32, 4),
-            new VertexAttributeDescriptor(VertexAttribute.TexCoord2, VertexAttributeFormat.Float32, 4),
-            new VertexAttributeDescriptor(VertexAttribute.TexCoord3, VertexAttributeFormat.Float32, 4),
-            new VertexAttributeDescriptor(VertexAttribute.TexCoord4, VertexAttributeFormat.Float32, 4),
+            new VertexAttributeDescriptor(VertexAttribute.TexCoord2, VertexAttributeFormat.Float16, 4),
+            new VertexAttributeDescriptor(VertexAttribute.TexCoord3, VertexAttributeFormat.Float16, 4),
+            new VertexAttributeDescriptor(VertexAttribute.TexCoord4, VertexAttributeFormat.Float16, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord5, VertexAttributeFormat.Float32, 4),
-            new VertexAttributeDescriptor(VertexAttribute.TexCoord6, VertexAttributeFormat.Float32, 4),
+            new VertexAttributeDescriptor(VertexAttribute.TexCoord6, VertexAttributeFormat.Float16, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord7, VertexAttributeFormat.Float32, 4),
         };
 
@@ -66,6 +100,8 @@ namespace Doctype
 
         public HtmlMeshBuilder()
         {
+            Debug.Assert(Unity.Collections.LowLevel.Unsafe.UnsafeUtility.SizeOf<Vertex>() == BytesPerVertex,
+                         "Vertex struct size drifted from BytesPerVertex");
             _mesh = new Mesh { name = "Doctype", hideFlags = HideFlags.HideAndDontSave };
             _mesh.MarkDynamic();
         }
@@ -185,16 +221,16 @@ namespace Doctype
                 var rect = new Vector4(quad.X + quad.W * 0.5f, quad.Y + quad.H * 0.5f,
                                        quad.W * 0.5f, quad.H * 0.5f);
 
-                var radiusX = new Vector4(quad.Rx0, quad.Rx1, quad.Rx2, quad.Rx3);
-                var radiusY = new Vector4(quad.Ry0, quad.Ry1, quad.Ry2, quad.Ry3);
-                var border = new Vector4(quad.BorderL, quad.BorderT, quad.BorderR, quad.BorderB);
+                var radiusX = new Half4(quad.Rx0, quad.Rx1, quad.Rx2, quad.Rx3);
+                var radiusY = new Half4(quad.Ry0, quad.Ry1, quad.Ry2, quad.Ry3);
+                var border = new Half4(quad.BorderL, quad.BorderT, quad.BorderR, quad.BorderB);
 
                 Vector4 clip = quad.IsClipped
                     ? new Vector4(quad.ClipX + quad.ClipW * 0.5f, quad.ClipY + quad.ClipH * 0.5f,
                                   quad.ClipW * 0.5f, quad.ClipH * 0.5f)
                     : new Vector4(0f, 0f, -1f, -1f);
 
-                var clipR = new Vector4(quad.ClipR0, quad.ClipR1, quad.ClipR2, quad.ClipR3);
+                var clipR = new Half4(quad.ClipR0, quad.ClipR1, quad.ClipR2, quad.ClipR3);
                 var parameters = new Vector4(quad.P0, quad.P1, quad.P2, quad.P3);
 
                 var template = new Vertex
@@ -212,19 +248,19 @@ namespace Doctype
                 float typeF = (float)quad.TypeRaw;
                 float gradF = quad.GradRow;
 
-                template.Position = new Vector3(x0, y0, 0f);
+                template.Position = new Vector2(x0, y0);
                 template.Uv = new Vector4(u0, v0, typeF, gradF);
                 _vertices[v + 0] = template;
 
-                template.Position = new Vector3(x1, y0, 0f);
+                template.Position = new Vector2(x1, y0);
                 template.Uv = new Vector4(u1, v0, typeF, gradF);
                 _vertices[v + 1] = template;
 
-                template.Position = new Vector3(x1, y1, 0f);
+                template.Position = new Vector2(x1, y1);
                 template.Uv = new Vector4(u1, v1, typeF, gradF);
                 _vertices[v + 2] = template;
 
-                template.Position = new Vector3(x0, y1, 0f);
+                template.Position = new Vector2(x0, y1);
                 template.Uv = new Vector4(u0, v1, typeF, gradF);
                 _vertices[v + 3] = template;
 
