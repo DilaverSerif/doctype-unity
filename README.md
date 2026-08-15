@@ -119,15 +119,15 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.75 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.19** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.56** | **0** |
-| one text node changed per frame | 383 | 1.79 | 24.37 | 224 |
-| one inline style changed per frame | 383 | 1.76 | 24.34 | 217 |
-| scrolled every frame | 410 | 1.18 | 24.90 | 240 |
-| resized every frame | 412 | 4.63 | 25.20 | 241 |
-| re-parsed every frame | 384 | 12.60 | 24.36 | 225 |
-| four panels, one text node each | 1532 | 6.37 | 36.34 | 3591 |
+| no HUD at all | 0 | 0.00 | 2.48 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.14** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.58** | **0** |
+| one text node changed per frame | 383 | 1.90 | 21.09 | 224 |
+| one inline style changed per frame | 383 | 1.85 | 21.09 | 217 |
+| scrolled every frame | 410 | 1.11 | 21.58 | 240 |
+| resized every frame | 412 | 4.45 | 21.77 | 241 |
+| re-parsed every frame | 384 | 12.51 | 21.06 | 225 |
+| four panels, one text node each | 1532 | 6.80 | 31.81 | 3591 |
 
 ### A HUD that is not changing is free
 
@@ -138,21 +138,29 @@ and draw entirely when nothing has invalidated it, so an idle page costs one
 
 ### The cost is pixels, not geometry
 
-Everything that redraws lands between 24 and 25 ms of GPU, whether the frame did
-1.2 ms of CPU work or 12.6 ms, and whether it re-parsed the document or moved one
+Everything that redraws lands between 21 and 22 ms of GPU, whether the frame did
+1.1 ms of CPU work or 12.5 ms, and whether it re-parsed the document or moved one
 character. That plateau is the whole story, and it took a controlled experiment
 to read correctly:
 
 | | quads | vertex bytes | pixels | GPU |
 |---|---|---|---|---|
-| full resolution | 383 | 224 KB | 1× | 24.37 ms |
-| half resolution | **383** | **224 KB** | **¼** | **8.87 ms** |
+| full resolution | 383 | 224 KB | 1× | 21.09 ms |
+| half resolution | **383** | **224 KB** | **¼** | **8.14 ms** |
 
 Same document, same quad count, the same 224 KB uploaded — only the pixel count
-changed, and the cost fell by 3.5×. So the GPU time is fill and overdraw: the
+changed, and the cost fell by 3.3×. So the GPU time is fill and overdraw: the
 page paints its panel background, then a rectangle per row, then a border, then
 the glyphs, and every one of those fragments is shaded by an SDF shader with an
 antialiasing skirt.
+
+The numbers above already include one consequence of that reading: the exact
+sRGB transfer function used to run per fragment, ahead of every branch, on a
+colour the mesh writes once per quad. Moving it to the vertex stage — identical
+output, four corners carrying one value interpolate to that value — took a
+consistent **14% off every redraw scenario** (24.4 → 21.1 ms on one panel,
+36.3 → 31.8 on four). One `pow` per channel, measured at three milliseconds a
+frame on this phone.
 
 Two things follow. The 3.6 MB of vertex data a four-panel HUD re-uploads every
 frame is **not** the bottleneck — it costs CPU time (~3 ms of mesh building) and
@@ -162,7 +170,7 @@ measurement knob: half resolution, 3.5× cheaper, softer text.
 
 ### Re-parsing is the expensive thing, so don't
 
-Rebuilding a document from a string costs 12.60 ms, of which **10.95 ms is
+Rebuilding a document from a string costs 12.5 ms, of which **10.9 ms is
 parsing** — and most of that is litehtml re-parsing its own default stylesheet,
 a fixed price per document regardless of page size. Two things take it off the
 table: a trimmed master stylesheet for game UI (~2.4× faster document creation),
