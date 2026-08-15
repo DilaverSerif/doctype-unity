@@ -203,6 +203,42 @@ namespace Doctype
                 float x1 = quad.X + quad.W + pad;
                 float y1 = quad.Y + quad.H + pad;
 
+                // A border edge quad describes the whole element box (the
+                // shader reconstructs the ring from the Rect field, which
+                // stays the full box below), but it can only ever PAINT a band
+                // along its own edge: as deep as the edge is thick or its two
+                // corner arcs reach, plus the antialiasing falloff. Shrinking
+                // the geometry to that band costs nothing and stops a bordered
+                // element from paying four element-sized quads of fill for a
+                // hairline ring — which measured as most of the overdraw on a
+                // full redraw.
+                if (quad.Type == HtmlQuadType.Border)
+                {
+                    const float aa = 2f;
+                    switch ((int)quad.P0)
+                    {
+                        case 0: // top: corners tl, tr
+                            y1 = Mathf.Min(y1, quad.Y + Mathf.Max(quad.BorderT, Mathf.Max(quad.Ry0, quad.Ry1)) + aa);
+                            break;
+                        case 1: // right: corners tr, br
+                            x0 = Mathf.Max(x0, quad.X + quad.W
+                                               - Mathf.Max(quad.BorderR, Mathf.Max(quad.Rx1, quad.Rx2)) - aa);
+                            break;
+                        case 2: // bottom: corners br, bl
+                            y0 = Mathf.Max(y0, quad.Y + quad.H
+                                               - Mathf.Max(quad.BorderB, Mathf.Max(quad.Ry2, quad.Ry3)) - aa);
+                            break;
+                        case 3: // left: corners tl, bl
+                            x1 = Mathf.Min(x1, quad.X + Mathf.Max(quad.BorderL, Mathf.Max(quad.Rx0, quad.Rx3)) + aa);
+                            break;
+                    }
+
+                    if (x1 <= x0 || y1 <= y0)
+                    {
+                        continue;
+                    }
+                }
+
                 // UVs are mapped against the unpadded rect so glyphs land on
                 // exactly their atlas cell.
                 float du = (quad.U1 - quad.U0) / quad.W;

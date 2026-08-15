@@ -125,15 +125,15 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.69 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.11** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.65** | **0** |
-| one text node changed per frame | 383 | 1.69 | **3.37** | 171 |
-| one inline style changed per frame | 383 | 1.50 | **4.09** | 165 |
-| scrolled every frame | 410 | 1.22 | **4.68** | 183 |
-| resized every frame | 412 | 4.13 | 21.77 | 183 |
-| re-parsed every frame | 384 | 12.15 | **6.25** | 171 |
-| four panels, one text node each | 1532 | 6.74 | **5.07** | 2729 |
+| no HUD at all | 0 | 0.00 | 2.77 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.18** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.62** | **0** |
+| one text node changed per frame | 383 | 1.99 | **3.35** | 171 |
+| one inline style changed per frame | 383 | 1.74 | **3.48** | 165 |
+| scrolled every frame | 410 | 1.55 | **4.28** | 183 |
+| resized every frame | 412 | 4.54 | **8.48** | 183 |
+| re-parsed every frame | 384 | 12.43 | **4.24** | 171 |
+| four panels, one text node each | 1532 | 6.81 | **5.03** | 2729 |
 
 ### A HUD that is not changing is free
 
@@ -145,10 +145,10 @@ work is already done.
 
 ### The cost is pixels, not geometry
 
-Scrolling and resizing, the two scenarios that repaint a whole panel, land at
-21 and 22 ms of GPU. Before partial redraw existed, *everything* did: changing
-one character cost the same 21 ms as re-parsing the entire document. That
-plateau took a controlled experiment to read correctly:
+A full repaint of a panel used to land at 21 to 22 ms of GPU whatever caused
+it, and before partial redraw existed everything caused it: changing one
+character cost the same 21 ms as re-parsing the entire document. That plateau
+took a controlled experiment to read correctly:
 
 | full redraw | quads | vertex bytes | pixels | GPU |
 |---|---|---|---|---|
@@ -199,8 +199,10 @@ The GPU column in the first table shows what that buys on this phone:
 - Re-parsing the document fell from 21 ms to 6.2 ms without anyone optimising
   re-parse: the diff is byte-based and does not care why the recording ran, so
   a re-parse that reproduces the same quads is a small dirty rectangle.
-- A resize still pays the full 21 ms, honestly. Every pixel of the panel
-  really does change.
+- A resize still repaints everything, honestly: the surface is recreated at
+  the new size, so there are no retained pixels to keep. What fell instead is
+  the price of the full repaint itself, from 21.8 ms to 8.5, and that story
+  belongs to the border (two sections down).
 
 ### Scrolling is a translation, so treat it like one
 
@@ -229,6 +231,28 @@ scratch target, because a texture cannot copy onto itself) and repaints a
 21.4 ms of GPU into 4.7 ms. Touch dragging gets the same path because
 `HtmlRawImage` quantizes drag deltas to whole document pixels and carries the
 fraction, which no finger can tell and every frame can copy.
+
+### A border is a ring, but it was billed as a box
+
+Every border edge was recorded as a quad spanning its whole element, and the
+shader carved the ring out analytically. The pixels came out right; the
+fragments did not: the GPU still shaded the element's full area once per
+edge, so a bordered row paid four row-sized quads of fill before its
+background and text were even counted, and the panel's own 2 px border cost
+four panel-sized ones. On the benchmark page that was most of the overdraw.
+
+The fix is a few lines of geometry: the mesh builder now clips a border
+quad's vertices to the band its edge can actually paint, as deep as the edge
+is thick or its corner arcs reach, plus the antialiasing falloff. The shape
+still rides in the vertex parameters, so the shader, the native recorder and
+the ABI are untouched, and the reference rasterizer keeps drawing the full
+box, which is what lets the pixel tests prove the band loses nothing.
+
+Every repaint that includes a border got cheaper at once: a resize fell from
+21.8 to 8.5 ms of GPU, a re-parse from 6.2 to 4.2, four panels re-parsing at
+once from 16.0 to 8.1, a style change from 4.1 to 3.5. Nothing in the table
+now costs more than 8.5 ms, and the rows still at that mark are full repaints
+doing honest work.
 
 One consequence: `RenderScale` used to be the big lever, and now it only
 matters for full redraws. A mutating panel at half resolution measures 3.19 ms
@@ -318,8 +342,8 @@ without a GPU in the loop.
 
 Working and measured, not yet a released package. The interfaces described above
 are stable enough to build on; the roadmap is about cost, not correctness:
-making the remaining full redraw cheaper (a resize still repaints every
-pixel), and separating layout cost from document size.
+shaving what is left of a full repaint (the panel background still paints
+under every row), and separating layout cost from document size.
 
 ## Licence and credits
 
