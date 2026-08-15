@@ -43,6 +43,11 @@ world-space quad, a material slot on a monitor prop.
   an inline style in place. Re-parsing a document is ~11 ms on a budget phone;
   these are ~0.2 ms, and they keep hover, focus and scroll state that a re-parse
   would throw away.
+- **Partial redraw.** The native side byte-diffs every recorded frame against the
+  previous one and reports a dirty rectangle; the renderer scissors to it and
+  keeps the rest of the target from the last frame. Changing a score repaints
+  the score, not the page, and on a phone that is the difference between 21 ms
+  of GPU and 3 ms.
 - **Transparency that composites correctly.** A page can be a HUD over a running
   game, with a premultiplied-alpha material and touch pass-through so the parts
   it does not paint are not a sheet of glass over the game.
@@ -119,31 +124,32 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.48 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.14** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.58** | **0** |
-| one text node changed per frame | 383 | 1.90 | 21.09 | 224 |
-| one inline style changed per frame | 383 | 1.85 | 21.09 | 217 |
-| scrolled every frame | 410 | 1.11 | 21.58 | 240 |
-| resized every frame | 412 | 4.45 | 21.77 | 241 |
-| re-parsed every frame | 384 | 12.51 | 21.06 | 225 |
-| four panels, one text node each | 1532 | 6.80 | 31.81 | 3591 |
+| no HUD at all | 0 | 0.00 | 2.71 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.11** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.59** | **0** |
+| one text node changed per frame | 383 | 1.97 | **3.36** | 224 |
+| one inline style changed per frame | 383 | 1.74 | **4.10** | 217 |
+| scrolled every frame | 410 | 1.32 | 21.39 | 240 |
+| resized every frame | 412 | 4.53 | 21.80 | 241 |
+| re-parsed every frame | 384 | 12.39 | **6.17** | 225 |
+| four panels, one text node each | 1532 | 7.20 | **5.14** | 3591 |
 
 ### A HUD that is not changing is free
 
-Zero CPU, zero bytes uploaded, and 0.4 ms of GPU for four panels and 1524 quads.
-That is not a rounding artifact: the view skips layout, recording, mesh build
-and draw entirely when nothing has invalidated it, so an idle page costs one
-`if`. For UI that updates a few times a second, the work is already done.
+Zero CPU, zero bytes uploaded, and 1.9 ms of GPU over the game-only baseline for
+four panels and 1524 quads. That is not a rounding artifact: the view skips
+layout, recording, mesh build and draw entirely when nothing has invalidated it,
+so an idle page costs one `if`. For UI that updates a few times a second, the
+work is already done.
 
 ### The cost is pixels, not geometry
 
-Everything that redraws lands between 21 and 22 ms of GPU, whether the frame did
-1.1 ms of CPU work or 12.5 ms, and whether it re-parsed the document or moved one
-character. That plateau is the whole story, and it took a controlled experiment
-to read correctly:
+Scrolling and resizing, the two scenarios that repaint a whole panel, land at
+21 and 22 ms of GPU. Before partial redraw existed, *everything* did: changing
+one character cost the same 21 ms as re-parsing the entire document. That
+plateau took a controlled experiment to read correctly:
 
-| | quads | vertex bytes | pixels | GPU |
+| full redraw | quads | vertex bytes | pixels | GPU |
 |---|---|---|---|---|
 | full resolution | 383 | 224 KB | 1× | 21.09 ms |
 | half resolution | **383** | **224 KB** | **¼** | **8.14 ms** |
@@ -154,7 +160,7 @@ page paints its panel background, then a rectangle per row, then a border, then
 the glyphs, and every one of those fragments is shaded by an SDF shader with an
 antialiasing skirt.
 
-The numbers above already include one consequence of that reading: the exact
+The plateau numbers already include one consequence of that reading: the exact
 sRGB transfer function used to run per fragment, ahead of every branch, on a
 colour the mesh writes once per quad. Moving it to the vertex stage (identical
 output, since four corners carrying one value interpolate to that value) took a
@@ -168,9 +174,35 @@ nothing measurable on the GPU. And `RenderScale`, which exists on
 `HtmlRawImage`, turns out to be a shipping-grade optimisation and not just a
 measurement knob: half resolution, 3.5× cheaper, softer text.
 
+### Redraw only the pixels that changed
+
+If the cost is fill, the cheapest pixel is the one you do not shade. The native
+side already re-records only dirty subtrees; it now also byte-diffs each
+recorded frame against the previous one and reports the result as none, a
+rectangle, or everything. The diff is a common prefix plus a common suffix, so
+a quad inserted in the middle (a score gaining a digit) dirties its own range
+and not everything after it. The renderer scissors to that rectangle, keeps
+every other pixel from the last frame, and clears inside the scissor by drawing
+an opaque quad, because a scissored `ClearRenderTarget` is precisely the
+operation graphics APIs disagree about.
+
+The GPU column in the first table shows what that buys on this phone:
+
+- A text or style change fell from 21 ms to 3.4-4.1 ms, within noise of an idle
+  HUD. Four panels each changing a text node per frame: 31.8 ms down to 5.1 ms.
+- Re-parsing the document fell from 21 ms to 6.2 ms without anyone optimising
+  re-parse: the diff is byte-based and does not care why the recording ran, so
+  a re-parse that reproduces the same quads is a small dirty rectangle.
+- Scroll and resize still pay the full 21 ms, honestly. Every pixel of the
+  panel really does move.
+
+One consequence: `RenderScale` used to be the big lever, and now it only
+matters for full redraws. A mutating panel at half resolution measures 3.28 ms
+against 3.36 at full, because the dirty region is small either way.
+
 ### Re-parsing is the expensive thing, so don't
 
-Rebuilding a document from a string costs 12.5 ms, of which **10.9 ms is
+Rebuilding a document from a string costs 12.4 ms of CPU, of which **10.8 ms is
 parsing**, and most of that is litehtml re-parsing its own default stylesheet,
 a fixed price per document regardless of page size. Two things take it off the
 table: a trimmed master stylesheet for game UI (~2.4× faster document creation),
@@ -238,13 +270,13 @@ device refusing to answer.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 79 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 97 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 693 frame comparisons
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
 
-Play-mode tests (34) live in `Assets/Doctype/Tests/` and run through
-Unity's test runner. The native harness rasterizes pages through a reference
+Play-mode tests (36) and edit-mode tests (43) live in `Assets/Doctype/Tests/`
+and run through Unity's test runner. The native harness rasterizes pages through a reference
 software rasterizer, so the quad stream can be checked against known pixels
 without a GPU in the loop.
 
@@ -252,8 +284,8 @@ without a GPU in the loop.
 
 Working and measured, not yet a released package. The interfaces described above
 are stable enough to build on; the roadmap is about cost, not correctness:
-reducing fill and overdraw, redrawing only what changed, and separating layout
-cost from document size.
+making the remaining full redraws cheaper (scroll and resize still repaint
+every pixel), and separating layout cost from document size.
 
 ## Licence and credits
 
