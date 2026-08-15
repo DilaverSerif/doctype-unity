@@ -147,6 +147,26 @@ namespace Doctype
         public float DirtyY;
         public float DirtyW;
         public float DirtyH;
+
+        // Only meaningful when DirtyMode is Scroll: the DESTINATION of the
+        // pixel copy (always whole pixels). The renderer fills it from the
+        // previous frame at (x - ScrollDx, y - ScrollDy) before repainting the
+        // dirty rects. Native emits Scroll only after verifying every quad
+        // against the translation, so acting on it cannot be wrong.
+        public float ScrollX;
+        public float ScrollY;
+        public float ScrollW;
+        public float ScrollH;
+        public float ScrollDx;
+        public float ScrollDy;
+
+        // Second dirty rect for Scroll: the sliver along the scrolled window's
+        // opposite edge, where a fractional edge blends content with
+        // background and cannot ride the whole-pixel copy. Zero when unused.
+        public float Dirty2X;
+        public float Dirty2Y;
+        public float Dirty2W;
+        public float Dirty2H;
     }
 
     /// <summary>
@@ -163,6 +183,13 @@ namespace Doctype
 
         /// <summary>Only the rect changed (document space, already padded).</summary>
         Rect = 2,
+
+        /// <summary>
+        /// The previous frame with the scroll region's pixels translated, plus
+        /// the dirty rect (the strip that scrolled in). A renderer that cannot
+        /// move pixels may treat this as <see cref="Full"/>.
+        /// </summary>
+        Scroll = 3,
     }
 
     // Delegates matching LhuHostCallbacks. Every implementation passed to native

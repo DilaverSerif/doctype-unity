@@ -363,5 +363,55 @@ namespace Doctype.Tests
             Assert.AreEqual(255, Sample(150, 250).b, 3, "the repainted band survives idle frames");
         }
 
+        /// <remarks>
+        /// The scroll fast path on the actual GPU: the retained pixels must
+        /// ride two texel copies into their new position (any y-flip mistake
+        /// lands them in the wrong half), and only the strip that scrolled in
+        /// may be repainted. Alternating solid rows make every position
+        /// checkable: after a one-row scroll the colours at fixed points swap,
+        /// and the bottom row's colour can only come from the strip repaint.
+        /// </remarks>
+        [UnityTest]
+        public IEnumerator ScrollCopiesRetainedPixelsAndRepaintsTheStrip()
+        {
+            _view.SetSize(300, 300);
+
+            string rows = "";
+            for (int i = 0; i < 30; i++)
+            {
+                rows += "<div style='height:30px;background:" + (i % 2 == 0 ? "#ff0000" : "#0000ff") +
+                        "'></div>";
+            }
+
+            _view.LoadHtml("<body style='margin:0;background:#101418'>" +
+                           "<div id='list' style='height:300px;overflow:auto'>" + rows + "</div></body>");
+            yield return WaitForRender();
+
+            Assert.AreEqual(HtmlDirtyMode.Full, _view.LastDirtyMode, "the first paint is full");
+            Assert.AreEqual(255, Sample(150, 15).r, 3, "row 0 (red) fills the top slot");
+            Assert.AreEqual(255, Sample(150, 45).b, 3, "row 1 (blue) sits under it");
+
+            Assert.IsTrue(_view.Scroll(new Vector2(0f, 30f), new Vector2(150f, 150f)),
+                          "the list consumed the scroll");
+            yield return WaitForRender();
+
+            Assert.AreEqual(HtmlDirtyMode.Scroll, _view.LastDirtyMode,
+                            "a pure scroll is reported as a translation, not a repaint");
+
+            RectInt px = _view.LastDirtyPixels;
+            Assert.Less(px.height, 60, "only the entered strip was repainted");
+            Assert.Greater(px.yMin, 200, "and it sits at the bottom, where content entered");
+
+            Assert.AreEqual(255, Sample(150, 15).b, 3, "the blue row was carried into the top slot by the copy");
+            Assert.AreEqual(255, Sample(150, 45).r, 3, "with the red row right behind it");
+            Assert.AreEqual(255, Sample(150, 285).r, 3, "and the strip repaint drew the row that scrolled in");
+
+            // Idle frames afterwards leave the scrolled image alone. (No mode
+            // assertion: an idle view skips Render entirely, so LastDirtyMode
+            // deliberately keeps reporting the scroll that painted last.)
+            yield return WaitForRender();
+            Assert.AreEqual(255, Sample(150, 15).b, 3, "the copied pixels survive idle frames");
+        }
+
     }
 }

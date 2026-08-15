@@ -10,8 +10,8 @@
 #include <litehtml/render_inline.h>
 #include <litehtml/render_item.h>
 
-#include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -92,6 +92,28 @@ struct LhuContext
     // else -- restyles, rebuilds, atlas repacks -- lands in the quad bytes and
     // the diff catches it on its own.
     bool                  dirty_suspect = false;
+
+    // --- scroll fast path ----------------------------------------------------
+    //
+    // Net scroll delta applied since the last record, kept as a HYPOTHESIS for
+    // compute_dirty_region: "this frame might be the previous one translated".
+    // The diff then verifies every changed quad against the translation and
+    // falls back to the plain rect diff on the first quad it cannot explain,
+    // so a wrong or stale hint can only cost speed, never pixels. One scroll
+    // view only: two views scrolling between the same pair of records is not a
+    // single translation, and `multi` disarms the attempt.
+    bool  scroll_hint_any   = false;
+    bool  scroll_hint_multi = false;
+    float scroll_hint_box_x = 0.f, scroll_hint_box_y = 0.f;
+    float scroll_hint_dx    = 0.f, scroll_hint_dy    = 0.f;
+
+    void clear_scroll_hint()
+    {
+        scroll_hint_any   = false;
+        scroll_hint_multi = false;
+        scroll_hint_dx    = 0.f;
+        scroll_hint_dy    = 0.f;
+    }
 
     // --- retained display list state (experiment E2) -------------------------
     //
@@ -379,6 +401,10 @@ int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* user_css)
     }
 
     ctx->invalidate_layout();
+
+    // A scroll hint describes the outgoing document's viewport; the new
+    // document must not inherit it.
+    ctx->clear_scroll_hint();
 
     if(!ctx->fonts.has_fonts())
     {
@@ -909,6 +935,541 @@ struct DirtyBounds
     }
 };
 
+// Axis-aligned pixels a quad can touch: rect intersected with clip. Returns
+// false when the quad paints nothing at all. Note the clip convention: a
+// negative width means "no clip", but a PRESENT clip with zero width or
+// height means the quad is clipped away entirely -- which is exactly what a
+// row scrolled out of its viewport carries, so getting this wrong reads
+// offscreen content as painted.
+bool painted_box(const LhuQuad& q, float& x0, float& y0, float& x1, float& y1)
+{
+    x0 = q.x;
+    y0 = q.y;
+    x1 = q.x + q.w;
+    y1 = q.y + q.h;
+
+    if(q.clip_w >= 0.f)
+    {
+        x0 = std::max(x0, q.clip_x);
+        y0 = std::max(y0, q.clip_y);
+        x1 = std::min(x1, q.clip_x + q.clip_w);
+        y1 = std::min(y1, q.clip_y + q.clip_h);
+    }
+
+    return x1 > x0 && y1 > y0;
+}
+
+// Is `b` exactly `a` translated by (tx, ty), ignoring the clip? Positions
+// move; a gradient's geometry is absolute document coordinates, so it moves
+// too. The clip is judged separately (see clip_compatible): litehtml clips a
+// background layer to its own element's box, so a scrolled row's clip moves
+// with it, while text under the container's overflow clip keeps a stationary
+// one -- byte equality cannot express both. Bit-exact by construction: layout
+// computes positions as (content - scroll_offset), and with integral scroll
+// offsets the float arithmetic reassociates without rounding, which is what
+// lets memcmp be the comparison.
+bool geometry_translated(const LhuQuad& a, const LhuQuad& b, float tx, float ty)
+{
+    LhuQuad ta = a;
+    ta.x += tx;
+    ta.y += ty;
+
+    switch(ta.type)
+    {
+    case LHU_QUAD_LINEAR_GRAD:
+        ta.params[0] += tx;
+        ta.params[1] += ty;
+        ta.params[2] += tx;
+        ta.params[3] += ty;
+        break;
+    case LHU_QUAD_RADIAL_GRAD:
+    case LHU_QUAD_CONIC_GRAD:
+        ta.params[0] += tx;
+        ta.params[1] += ty;
+        break;
+    default:
+        break;
+    }
+
+    LhuQuad tb = b;
+    for(LhuQuad* q : {&ta, &tb})
+    {
+        q->clip_x = q->clip_y = q->clip_w = q->clip_h = 0.f;
+        q->clip_r[0] = q->clip_r[1] = q->clip_r[2] = q->clip_r[3] = 0.f;
+    }
+
+    return std::memcmp(&ta, &tb, sizeof(LhuQuad)) == 0;
+}
+
+// For a matched pair, the copy is only exact if the clips agree wherever the
+// copied pixels land: over the destination D, b's clip must expose exactly
+// what a's clip (translated) exposed at the source. Interval arithmetic
+// covers every real case at once -- a stationary overflow clip (both sides
+// reduce to D), a clip that rides along with its row, and a row clip clamped
+// at the viewport edge. Rounded clips are refused outright: their corners are
+// not translation-invariant.
+bool clip_compatible(const LhuQuad& a, const LhuQuad& b, float tx, float ty, float dx0, float dy0, float dx1,
+                     float dy1)
+{
+    for(int i = 0; i < 4; ++i)
+    {
+        if(a.clip_r[i] > 0.001f || b.clip_r[i] > 0.001f)
+        {
+            return false;
+        }
+    }
+
+    // Clip of `a`, translated, clamped to D. Present-but-empty clips collapse
+    // the interval on their own; only a truly absent clip means unbounded.
+    float ax0 = dx0, ay0 = dy0, ax1 = dx1, ay1 = dy1;
+    if(a.clip_w >= 0.f)
+    {
+        ax0 = std::max(dx0, a.clip_x + tx);
+        ay0 = std::max(dy0, a.clip_y + ty);
+        ax1 = std::min(dx1, a.clip_x + a.clip_w + tx);
+        ay1 = std::min(dy1, a.clip_y + a.clip_h + ty);
+    }
+
+    // Clip of `b`, clamped to D.
+    float bx0 = dx0, by0 = dy0, bx1 = dx1, by1 = dy1;
+    if(b.clip_w >= 0.f)
+    {
+        bx0 = std::max(dx0, b.clip_x);
+        by0 = std::max(dy0, b.clip_y);
+        bx1 = std::min(dx1, b.clip_x + b.clip_w);
+        by1 = std::min(dy1, b.clip_y + b.clip_h);
+    }
+
+    const bool a_empty = ax1 <= ax0 || ay1 <= ay0;
+    const bool b_empty = bx1 <= bx0 || by1 <= by0;
+    if(a_empty || b_empty)
+    {
+        return a_empty == b_empty;
+    }
+
+    const float eps = 0.01f;
+    return std::fabs(ax0 - bx0) < eps && std::fabs(ay0 - by0) < eps && std::fabs(ax1 - bx1) < eps &&
+           std::fabs(ay1 - by1) < eps;
+}
+
+// The scroll refinement: can this frame be explained as the previous one with
+// one region's pixels translated, plus a repaint of the strips along the
+// scroll axis?
+//
+// Nothing is taken on faith; the frame has to prove the translation quad by
+// quad. Pass 1 aligns the changed spans of both frames into four classes:
+// byte-identical quads (content that sat still in the middle of the span --
+// a heading above a scrolled list keeps painting between the moving quads),
+// translated pairs, and quads only one frame has (content that scrolled in or
+// out). Pass 2 derives the scrolled window from the clips the moving quads
+// themselves carry, shrinks it to the whole pixels a texel copy can move --
+// a window edge sitting on a fraction (text heights above it are fractional)
+// blends content with background in the pixel row it crosses, and that row
+// must be repainted, never copied -- and then checks every class against the
+// copy: pairs must expose the same pixels through their clips, one-sided
+// quads must stay out of the copied region, and everything that did not move
+// (in the span or outside it) must be translation-invariant over the copied
+// pixels. The first quad that fails makes the whole attempt return false and
+// the caller keeps the plain rect answer, so this path can be wrong about
+// nothing.
+bool try_scroll_refine(const std::vector<LhuQuad>& now, const std::vector<LhuQuad>& then, size_t prefix,
+                       size_t suffix, float tx, float ty, LhuFrame* out)
+{
+    // The copy is a texel move; a fractional translation cannot use it.
+    if(std::fabs(tx - std::round(tx)) > 0.001f || std::fabs(ty - std::round(ty)) > 0.001f)
+    {
+        return false;
+    }
+
+    const size_t ie = then.size() - suffix;
+    const size_t je = now.size() - suffix;
+
+    const auto matches = [&](const LhuQuad& a, const LhuQuad& b) {
+        return std::memcmp(&a, &b, sizeof(LhuQuad)) == 0 || geometry_translated(a, b, tx, ty);
+    };
+
+    // ---- pass 1: align the spans -------------------------------------------
+    struct Pair
+    {
+        const LhuQuad* a;
+        const LhuQuad* b;
+    };
+    std::vector<Pair>           moved;
+    std::vector<const LhuQuad*> stationary;
+    std::vector<const LhuQuad*> extra_old;
+    std::vector<const LhuQuad*> extra_new;
+
+    // How far ahead resynchronization may scan. A quad that scrolled in or out
+    // is a whole element's run (a background, borders, a few glyphs); 64 quads
+    // of slack covers any sane element and bounds the cost.
+    const size_t kResync = 64;
+
+    size_t i = prefix, j = prefix;
+    float  bx0, by0, bx1, by1;
+    while(i < ie || j < je)
+    {
+        if(i < ie && !painted_box(then[i], bx0, by0, bx1, by1))
+        {
+            ++i;
+            continue;
+        }
+        if(j < je && !painted_box(now[j], bx0, by0, bx1, by1))
+        {
+            ++j;
+            continue;
+        }
+        if(i >= ie)
+        {
+            extra_new.push_back(&now[j]);
+            ++j;
+            continue;
+        }
+        if(j >= je)
+        {
+            extra_old.push_back(&then[i]);
+            ++i;
+            continue;
+        }
+
+        if(std::memcmp(&then[i], &now[j], sizeof(LhuQuad)) == 0)
+        {
+            stationary.push_back(&then[i]);
+            ++i;
+            ++j;
+            continue;
+        }
+        if(geometry_translated(then[i], now[j], tx, ty))
+        {
+            moved.push_back({&then[i], &now[j]});
+            ++i;
+            ++j;
+            continue;
+        }
+
+        // Out of step: one side has quads the other lacks. Resync on whichever
+        // side reaches a match sooner, and classify what was skipped.
+        size_t k = 0, l = 0;
+        for(size_t t = j + 1; t < je && t - j <= kResync; ++t)
+        {
+            if(matches(then[i], now[t]))
+            {
+                k = t - j;
+                break;
+            }
+        }
+        for(size_t t = i + 1; t < ie && t - i <= kResync; ++t)
+        {
+            if(matches(then[t], now[j]))
+            {
+                l = t - i;
+                break;
+            }
+        }
+
+        if(k > 0 && (l == 0 || k <= l))
+        {
+            while(k-- > 0)
+            {
+                extra_new.push_back(&now[j]);
+                ++j;
+            }
+            continue;
+        }
+        if(l > 0)
+        {
+            while(l-- > 0)
+            {
+                extra_old.push_back(&then[i]);
+                ++i;
+            }
+            continue;
+        }
+        return false;
+    }
+
+    if(moved.empty())
+    {
+        return false;
+    }
+
+    // ---- the scrolled window, from the moving quads's own clips -------------
+    float wx0 = 0.f, wy0 = 0.f, wx1 = 0.f, wy1 = 0.f;
+    {
+        bool       any        = false;
+        const auto grow_clip = [&](const LhuQuad* q) {
+            if(q->clip_w < 0.f)
+            {
+                return false; // scrolled content is always clipped; no clip, no window
+            }
+            if(!any)
+            {
+                wx0 = q->clip_x;
+                wy0 = q->clip_y;
+                wx1 = q->clip_x + q->clip_w;
+                wy1 = q->clip_y + q->clip_h;
+                any = true;
+            } else
+            {
+                wx0 = std::min(wx0, q->clip_x);
+                wy0 = std::min(wy0, q->clip_y);
+                wx1 = std::max(wx1, q->clip_x + q->clip_w);
+                wy1 = std::max(wy1, q->clip_y + q->clip_h);
+            }
+            return true;
+        };
+
+        for(const Pair& p : moved)
+        {
+            if(!grow_clip(p.a) || !grow_clip(p.b))
+            {
+                return false;
+            }
+        }
+        for(const LhuQuad* q : extra_old)
+        {
+            if(!grow_clip(q))
+            {
+                return false;
+            }
+        }
+        for(const LhuQuad* q : extra_new)
+        {
+            if(!grow_clip(q))
+            {
+                return false;
+            }
+        }
+    }
+
+    // Across the scroll axis the window's edges must sit on whole pixels:
+    // content slides along them, so a fractional edge would blend differently
+    // every frame in a pixel column no rect below repaints.
+    const auto is_whole = [](float v) { return std::fabs(v - std::round(v)) < 0.01f; };
+    if(ty != 0.f && (!is_whole(wx0) || !is_whole(wx1)))
+    {
+        return false;
+    }
+    if(tx != 0.f && (!is_whole(wy0) || !is_whole(wy1)))
+    {
+        return false;
+    }
+
+    // ---- D: the copied pixels ----------------------------------------------
+    // Window intersected with window-translated, shrunk to whole pixels plus
+    // one unit of margin along the scroll axis: the pixel rows straddling the
+    // window's (possibly fractional) edges blend content with background
+    // through the clip's antialiasing, and blended rows cannot be copied.
+    float dx0 = std::max(wx0, wx0 + tx);
+    float dy0 = std::max(wy0, wy0 + ty);
+    float dx1 = std::min(wx1, wx1 + tx);
+    float dy1 = std::min(wy1, wy1 + ty);
+
+    if(ty != 0.f)
+    {
+        dy0 = std::ceil(dy0) + 1.f;
+        dy1 = std::floor(dy1) - 1.f;
+    } else
+    {
+        dx0 = std::ceil(dx0) + 1.f;
+        dx1 = std::floor(dx1) - 1.f;
+    }
+
+    if(dx1 <= dx0 || dy1 <= dy0)
+    {
+        return false;
+    }
+
+    const float eps = 0.01f;
+
+    // ---- pass 2: every class proves itself against D ------------------------
+    for(const Pair& p : moved)
+    {
+        if(!clip_compatible(*p.a, *p.b, tx, ty, dx0, dy0, dx1, dy1))
+        {
+            return false;
+        }
+    }
+    for(const LhuQuad* q : extra_new)
+    {
+        painted_box(*q, bx0, by0, bx1, by1);
+        if(bx1 > dx0 + eps && bx0 < dx1 - eps && by1 > dy0 + eps && by0 < dy1 - eps)
+        {
+            return false; // scrolled in, yet paints into the copied pixels
+        }
+    }
+    for(const LhuQuad* q : extra_old)
+    {
+        painted_box(*q, bx0, by0, bx1, by1);
+        if(bx1 + tx > dx0 + eps && bx0 + tx < dx1 - eps && by1 + ty > dy0 + eps && by0 + ty < dy1 - eps)
+        {
+            return false; // scrolled out, yet the copy would still carry it
+        }
+    }
+
+    // The copy shifts the pixels *under* the moved content too, so anything
+    // that did not move -- in the span or outside it -- must look the same
+    // shifted wherever the copied pixels come from or land: a solid, unrounded
+    // rect covering that union, in practice the background the content
+    // scrolls across.
+    const float rx0 = std::min(dx0, dx0 - tx);
+    const float ry0 = std::min(dy0, dy0 - ty);
+    const float rx1 = std::max(dx1, dx1 - tx);
+    const float ry1 = std::max(dy1, dy1 - ty);
+
+    const auto invariant_over_copy = [&](const LhuQuad& q) {
+        float qx0, qy0, qx1, qy1;
+        if(!painted_box(q, qx0, qy0, qx1, qy1))
+        {
+            return true;
+        }
+        if(qx1 <= rx0 || qx0 >= rx1 || qy1 <= ry0 || qy0 >= ry1)
+        {
+            return true; // does not touch the copied pixels
+        }
+        if(q.type == LHU_QUAD_BORDER)
+        {
+            // A border paints only its ring. If the copied pixels sit inside
+            // the ring's inner rect -- clear of the rounded inner corners,
+            // conservatively sized by the outer radii -- it cannot touch them.
+            const float ix0 = q.x + q.border[0]; // border order: left, top, right, bottom
+            const float iy0 = q.y + q.border[1];
+            const float ix1 = q.x + q.w - q.border[2];
+            const float iy1 = q.y + q.h - q.border[3];
+            if(rx0 < ix0 || ry0 < iy0 || rx1 > ix1 || ry1 > iy1)
+            {
+                return false;
+            }
+            const float br[4][2] = {{q.rx[0], q.ry[0]}, {q.rx[1], q.ry[1]}, {q.rx[2], q.ry[2]}, {q.rx[3], q.ry[3]}};
+            const float bcx[4]   = {ix0, ix1, ix1, ix0};
+            const float bcy[4]   = {iy0, iy0, iy1, iy1};
+            for(int c = 0; c < 4; ++c)
+            {
+                if(br[c][0] <= 0.f || br[c][1] <= 0.f)
+                {
+                    continue;
+                }
+                const float kx0 = std::min(bcx[c], bcx[c] + (c == 0 || c == 3 ? br[c][0] : -br[c][0]));
+                const float kx1 = std::max(bcx[c], bcx[c] + (c == 0 || c == 3 ? br[c][0] : -br[c][0]));
+                const float ky0 = std::min(bcy[c], bcy[c] + (c <= 1 ? br[c][1] : -br[c][1]));
+                const float ky1 = std::max(bcy[c], bcy[c] + (c <= 1 ? br[c][1] : -br[c][1]));
+                if(kx1 > rx0 && kx0 < rx1 && ky1 > ry0 && ky0 < ry1)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if(q.type != LHU_QUAD_RECT)
+        {
+            return false; // glyphs, images, gradients: never uniform
+        }
+        if(qx0 > rx0 || qy0 > ry0 || qx1 < rx1 || qy1 < ry1)
+        {
+            return false; // covers only part of the region: its edge would smear
+        }
+
+        // Rounded corners are the one non-uniform part of a solid rect; they
+        // must stay clear of the region.
+        const float cr[4][2] = {{q.rx[0], q.ry[0]}, {q.rx[1], q.ry[1]}, {q.rx[2], q.ry[2]}, {q.rx[3], q.ry[3]}};
+        const float cx[4]    = {q.x, q.x + q.w, q.x + q.w, q.x};
+        const float cy[4]    = {q.y, q.y, q.y + q.h, q.y + q.h};
+        for(int c = 0; c < 4; ++c)
+        {
+            if(cr[c][0] <= 0.f || cr[c][1] <= 0.f)
+            {
+                continue;
+            }
+            const float kx0 = std::min(cx[c], cx[c] + (c == 0 || c == 3 ? cr[c][0] : -cr[c][0]));
+            const float kx1 = std::max(cx[c], cx[c] + (c == 0 || c == 3 ? cr[c][0] : -cr[c][0]));
+            const float ky0 = std::min(cy[c], cy[c] + (c <= 1 ? cr[c][1] : -cr[c][1]));
+            const float ky1 = std::max(cy[c], cy[c] + (c <= 1 ? cr[c][1] : -cr[c][1]));
+            if(kx1 > rx0 && kx0 < rx1 && ky1 > ry0 && ky0 < ry1)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    for(const LhuQuad* q : stationary)
+    {
+        if(!invariant_over_copy(*q))
+        {
+            return false;
+        }
+    }
+    for(size_t k = 0; k < prefix; ++k)
+    {
+        if(!invariant_over_copy(then[k]))
+        {
+            return false;
+        }
+    }
+    for(size_t k = then.size() - suffix; k < then.size(); ++k)
+    {
+        if(!invariant_over_copy(then[k]))
+        {
+            return false;
+        }
+    }
+
+    // ---- verified; emit the recipe ------------------------------------------
+    // D is the copy destination. What remains of the window on either side of
+    // it along the scroll axis -- the strip that scrolled in on one end, the
+    // fractional-edge sliver on the other -- is repainted. Same padding as the
+    // plain rect, for the same AA-skirt reason; the pad may spill into the
+    // copied region, where the repaint redraws identical pixels.
+    const float pad = 4.f;
+
+    float r1x0, r1y0, r1x1, r1y1; // the rect after D along the axis
+    float r2x0, r2y0, r2x1, r2y1; // the rect before D
+    if(ty != 0.f)
+    {
+        r1x0 = r2x0 = wx0;
+        r1x1 = r2x1 = wx1;
+        r2y0         = std::floor(wy0);
+        r2y1         = dy0;
+        r1y0         = dy1;
+        r1y1         = std::ceil(wy1);
+    } else
+    {
+        r1y0 = r2y0 = wy0;
+        r1y1 = r2y1 = wy1;
+        r2x0         = std::floor(wx0);
+        r2x1         = dx0;
+        r1x0         = dx1;
+        r1x1         = std::ceil(wx1);
+    }
+
+    // The strip that scrolled in is the interesting rect; report it first so
+    // hosts and tests that only look at the primary rect see the strip.
+    if((r2x1 - r2x0) * (r2y1 - r2y0) > (r1x1 - r1x0) * (r1y1 - r1y0))
+    {
+        std::swap(r1x0, r2x0);
+        std::swap(r1y0, r2y0);
+        std::swap(r1x1, r2x1);
+        std::swap(r1y1, r2y1);
+    }
+
+    const auto emit_rect = [&](float x0, float y0, float x1, float y1, float& ox, float& oy, float& ow, float& oh) {
+        ox = std::max(0.f, x0 - pad);
+        oy = std::max(0.f, y0 - pad);
+        ow = std::max(0.f, std::min(out->doc_width, x1 + pad) - ox);
+        oh = std::max(0.f, std::min(out->doc_height, y1 + pad) - oy);
+    };
+
+    out->dirty_mode = LHU_DIRTY_MODE_SCROLL;
+    out->scroll_x   = dx0;
+    out->scroll_y   = dy0;
+    out->scroll_w   = dx1 - dx0;
+    out->scroll_h   = dy1 - dy0;
+    out->scroll_dx  = tx;
+    out->scroll_dy  = ty;
+    emit_rect(r1x0, r1y0, r1x1, r1y1, out->dirty_x, out->dirty_y, out->dirty_w, out->dirty_h);
+    emit_rect(r2x0, r2y0, r2x1, r2y1, out->dirty2_x, out->dirty2_y, out->dirty2_w, out->dirty2_h);
+    return true;
+}
+
 // Fills out->dirty_* by diffing this frame against the previous recorded one.
 //
 // The diff is prefix/suffix rather than pairwise: a text that gains a digit
@@ -948,6 +1509,25 @@ void compute_dirty_region(LhuContext* ctx, LhuFrame* out, bool trusted)
             ++suffix;
         }
 
+        const bool lut_same     = ctx->container.grad_lut() == ctx->prev_grad_lut;
+        const bool span_changed = prefix < n_then - suffix || prefix < n_now - suffix;
+
+        // A pending scroll offers a better explanation than a bounding rect:
+        // the frame may be the previous one translated. Single view, single
+        // axis, LUT untouched -- and then every quad has to prove it. The
+        // content moves opposite to the scroll delta, hence the negation.
+        if(span_changed && lut_same && ctx->scroll_hint_any && !ctx->scroll_hint_multi &&
+           (ctx->scroll_hint_dx == 0.f) != (ctx->scroll_hint_dy == 0.f) &&
+           try_scroll_refine(now, then, prefix, suffix, -ctx->scroll_hint_dx, -ctx->scroll_hint_dy, out))
+        {
+            ctx->prev_quads.assign(now.begin(), now.end());
+            ctx->prev_grad_lut   = ctx->container.grad_lut();
+            ctx->prev_doc_w      = out->doc_width;
+            ctx->prev_doc_h      = out->doc_height;
+            ctx->have_prev_frame = true;
+            return;
+        }
+
         DirtyBounds bounds;
         for(size_t i = prefix; i < n_then - suffix; ++i)
         {
@@ -961,8 +1541,7 @@ void compute_dirty_region(LhuContext* ctx, LhuFrame* out, bool trusted)
         // A gradient's stops live in the LUT, not in the quad, so a stop can
         // change under a byte-identical quad. If the LUT moved, every gradient
         // in either frame is suspect.
-        const auto& lut = ctx->container.grad_lut();
-        if(lut != ctx->prev_grad_lut)
+        if(!lut_same)
         {
             for(const LhuQuad& q : then)
             {
@@ -1128,6 +1707,10 @@ void lhu_record(LhuContext* ctx, LhuFrame* out)
     out->grad_lut_version  = ctx->container.grad_lut_version();
 
     compute_dirty_region(ctx, out, dirty_diff_trusted);
+
+    // The hypothesis was for this record only; whether it was used, refuted or
+    // ignored, the next record starts from what the next scrolls report.
+    ctx->clear_scroll_hint();
 }
 
 namespace
@@ -1405,6 +1988,29 @@ int32_t lhu_scroll(LhuContext* ctx, float dx, float dy, float x, float y)
         // size; skipping it would leave the scroll offsets to be clamped by a
         // different code path than the one the slow path uses.
         ctx->invalidate_layout();
+
+        // Feed the dirty diff its translation hypothesis. The applied (post-
+        // clamp) deltas accumulate; scrolls of two different views between one
+        // pair of records disarm the fast path, because that is two
+        // translations and the frame encodes one.
+        for(const auto& sv : scrolled)
+        {
+            const float bx = static_cast<float>(sv.scroll_box.x);
+            const float by = static_cast<float>(sv.scroll_box.y);
+
+            if(!ctx->scroll_hint_any)
+            {
+                ctx->scroll_hint_any   = true;
+                ctx->scroll_hint_box_x = bx;
+                ctx->scroll_hint_box_y = by;
+            } else if(ctx->scroll_hint_box_x != bx || ctx->scroll_hint_box_y != by)
+            {
+                ctx->scroll_hint_multi = true;
+            }
+
+            ctx->scroll_hint_dx += static_cast<float>(sv.dx);
+            ctx->scroll_hint_dy += static_cast<float>(sv.dy);
+        }
     }
     return static_cast<int32_t>(scrolled.size());
 }

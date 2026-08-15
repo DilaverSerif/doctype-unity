@@ -47,7 +47,8 @@ world-space quad, a material slot on a monitor prop.
   previous one and reports a dirty rectangle; the renderer scissors to it and
   keeps the rest of the target from the last frame. Changing a score repaints
   the score, not the page, and on a phone that is the difference between 21 ms
-  of GPU and 3 ms.
+  of GPU and 3 ms. Scrolling goes further: a frame proven to be the previous
+  one translated is drawn as a pixel copy plus the strip that scrolled in.
 - **Transparency that composites correctly.** A page can be a HUD over a running
   game, with a premultiplied-alpha material and touch pass-through so the parts
   it does not paint are not a sheet of glass over the game.
@@ -124,15 +125,15 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.71 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.17** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.62** | **0** |
-| one text node changed per frame | 383 | 1.93 | **3.34** | 171 |
-| one inline style changed per frame | 383 | 1.70 | **4.12** | 165 |
-| scrolled every frame | 410 | 1.32 | 21.39 | 183 |
-| resized every frame | 412 | 4.56 | 21.78 | 183 |
-| re-parsed every frame | 384 | 12.58 | **6.20** | 171 |
-| four panels, one text node each | 1532 | 7.17 | **5.11** | 2729 |
+| no HUD at all | 0 | 0.00 | 2.69 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.11** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.65** | **0** |
+| one text node changed per frame | 383 | 1.69 | **3.37** | 171 |
+| one inline style changed per frame | 383 | 1.50 | **4.09** | 165 |
+| scrolled every frame | 410 | 1.22 | **4.68** | 183 |
+| resized every frame | 412 | 4.13 | 21.77 | 183 |
+| re-parsed every frame | 384 | 12.15 | **6.25** | 171 |
+| four panels, one text node each | 1532 | 6.74 | **5.07** | 2729 |
 
 ### A HUD that is not changing is free
 
@@ -198,8 +199,36 @@ The GPU column in the first table shows what that buys on this phone:
 - Re-parsing the document fell from 21 ms to 6.2 ms without anyone optimising
   re-parse: the diff is byte-based and does not care why the recording ran, so
   a re-parse that reproduces the same quads is a small dirty rectangle.
-- Scroll and resize still pay the full 21 ms, honestly. Every pixel of the
-  panel really does move.
+- A resize still pays the full 21 ms, honestly. Every pixel of the panel
+  really does change.
+
+### Scrolling is a translation, so treat it like one
+
+Scrolling used to sit on the same 21 ms plateau, which is absurd on its face:
+almost every pixel of a scrolled frame is already sitting in the render
+target, six pixels away from where it needs to be. So the diff now takes the
+applied scroll delta as a hypothesis, and the frame has to prove it quad by
+quad: content must be the previous frame's bytes translated (exactly, through
+a memcmp), what scrolled in may paint only inside the strip the repaint will
+cover, what scrolled out must leave the copied region entirely, and everything
+that did not move, from the heading above the list to the background the rows
+slide across, must look the same shifted. The first quad that fits none of
+these falls the frame back to the plain rect, so the fast path can be wrong
+about nothing: hover restyles mid-scroll, gradients under the content and
+rounded clips all degrade to a full repaint rather than to a wrong pixel.
+
+One honest subtlety survived contact with a real page: a scrolled window's
+edge usually sits on a fractional pixel (the text sizes above it decide where
+it lands), and the pixel row straddling that edge blends content with
+background. A whole-pixel copy cannot move a blend, so those rows ride in a
+second, sliver-sized dirty rect and get repainted instead.
+
+The renderer then moves the surviving pixels with two texel copies (through a
+scratch target, because a texture cannot copy onto itself) and repaints a
+16-pixel strip instead of an 1119-pixel window. On the phone that turned
+21.4 ms of GPU into 4.7 ms. Touch dragging gets the same path because
+`HtmlRawImage` quantizes drag deltas to whole document pixels and carries the
+fraction, which no finger can tell and every frame can copy.
 
 One consequence: `RenderScale` used to be the big lever, and now it only
 matters for full redraws. A mutating panel at half resolution measures 3.19 ms
@@ -275,12 +304,12 @@ device refusing to answer.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 97 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 120 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 693 frame comparisons
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
 
-Play-mode tests (36) and edit-mode tests (43) live in `Assets/Doctype/Tests/`
+Play-mode tests (37) and edit-mode tests (43) live in `Assets/Doctype/Tests/`
 and run through Unity's test runner. The native harness rasterizes pages through a reference
 software rasterizer, so the quad stream can be checked against known pixels
 without a GPU in the loop.
@@ -289,8 +318,8 @@ without a GPU in the loop.
 
 Working and measured, not yet a released package. The interfaces described above
 are stable enough to build on; the roadmap is about cost, not correctness:
-making the remaining full redraws cheaper (scroll and resize still repaint
-every pixel), and separating layout cost from document size.
+making the remaining full redraw cheaper (a resize still repaints every
+pixel), and separating layout cost from document size.
 
 ## Licence and credits
 

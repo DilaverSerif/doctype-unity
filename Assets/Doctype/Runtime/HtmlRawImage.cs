@@ -383,6 +383,10 @@ namespace Doctype
 
         private bool _dragClaimed;
 
+        // Fraction of a drag not yet turned into scroll, in document pixels.
+        // See OnDrag: scrolls are quantized so the scroll fast path can copy.
+        private Vector2 _dragRemainder;
+
         // Reused across every probe: one drag issues one of these per frame, and
         // a fresh List per frame is a fresh allocation per frame.
         private static readonly List<RaycastResult> s_hits = new List<RaycastResult>();
@@ -448,6 +452,7 @@ namespace Doctype
         public void OnBeginDrag(PointerEventData eventData)
         {
             _dragClaimed = false;
+            _dragRemainder = Vector2.zero;
 
             // No filter means nothing can claim the gesture, and Probe costs a
             // full raycast — so a page that only ever scrolls does not pay for
@@ -489,10 +494,24 @@ namespace Doctype
 
             Vector2 moved = now - before;
 
+            // Quantize the drag to whole document pixels and carry the fraction
+            // to the next event. Sub-pixel scroll positions are invisible, but
+            // they cost real money: the renderer's scroll fast path moves
+            // retained pixels with an exact texel copy, which a fractional
+            // offset cannot use — every drag frame would pay a full repaint.
+            _dragRemainder += moved;
+            var step = new Vector2(Mathf.Round(_dragRemainder.x), Mathf.Round(_dragRemainder.y));
+            _dragRemainder -= step;
+
+            if (step == Vector2.zero)
+            {
+                return;
+            }
+
             // Dragging the content down reveals what is above it, which is a
             // negative scroll. Verified against the engine: a positive dy moves
             // content up.
-            if (_view.Scroll(new Vector2(-moved.x, -moved.y), now))
+            if (_view.Scroll(new Vector2(-step.x, -step.y), now))
             {
                 return;
             }

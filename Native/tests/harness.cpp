@@ -891,6 +891,222 @@ void test_dirty_region()
     check(f.dirty_mode == LHU_DIRTY_MODE_FULL, "a resize repaints everything");
 }
 
+// The scroll fast path: a frame that is the previous one translated must say
+// so, and the host recipe -- copy the region, repaint the strip -- must land on
+// exactly the pixels a full repaint would have produced. The pixel comparison
+// is the load-bearing check; everything else pins when the path may NOT fire.
+void test_scroll_partial_redraw()
+{
+    std::printf("\n[scroll partial redraw]\n");
+
+    const auto raster = [](const LhuFrame& f, int w, int h, uint32_t bg) {
+        std::vector<uint8_t> fb(static_cast<size_t>(w) * h * 4);
+        for(size_t i = 0; i < fb.size(); i += 4)
+        {
+            fb[i + 0] = static_cast<uint8_t>(bg & 0xFF);
+            fb[i + 1] = static_cast<uint8_t>((bg >> 8) & 0xFF);
+            fb[i + 2] = static_cast<uint8_t>((bg >> 16) & 0xFF);
+            fb[i + 3] = static_cast<uint8_t>((bg >> 24) & 0xFF);
+        }
+        lhu_raster::Textures tex;
+        tex.font      = f.font_atlas_pixels;
+        tex.font_w    = f.font_atlas_w;
+        tex.font_h    = f.font_atlas_h;
+        tex.grad      = f.grad_lut_pixels;
+        tex.grad_w    = f.grad_lut_w;
+        tex.grad_rows = f.grad_lut_rows;
+        for(int i = 0; i < f.quad_count; ++i)
+        {
+            lhu_raster::draw_quad(fb, w, h, f.quads[i], tex);
+        }
+        return fb;
+    };
+
+    // What the Unity renderer does with a SCROLL frame, on the CPU: fill the
+    // destination rect from the retained image translated, then take both
+    // dirty rects' pixels from a full repaint (identical to a scissored
+    // clear+draw).
+    const auto apply_scroll = [](const std::vector<uint8_t>& prev, const std::vector<uint8_t>& repaint, int w, int h,
+                                 const LhuFrame& f) {
+        std::vector<uint8_t> fb = prev;
+
+        const int dx0 = std::max(0, static_cast<int>(f.scroll_x));
+        const int dy0 = std::max(0, static_cast<int>(f.scroll_y));
+        const int dx1 = std::min(w, static_cast<int>(f.scroll_x + f.scroll_w));
+        const int dy1 = std::min(h, static_cast<int>(f.scroll_y + f.scroll_h));
+        const int tx  = static_cast<int>(f.scroll_dx);
+        const int ty  = static_cast<int>(f.scroll_dy);
+
+        for(int y = dy0; y < dy1; ++y)
+        {
+            for(int x = dx0; x < dx1; ++x)
+            {
+                const size_t dst = (static_cast<size_t>(y) * w + x) * 4;
+                const size_t src = (static_cast<size_t>(y - ty) * w + (x - tx)) * 4;
+                std::memcpy(&fb[dst], &prev[src], 4);
+            }
+        }
+
+        const auto repaint_rect = [&](float fx, float fy, float fw, float fh) {
+            const int rx0 = std::max(0, static_cast<int>(fx));
+            const int ry0 = std::max(0, static_cast<int>(fy));
+            const int rx1 = std::min(w, static_cast<int>(std::ceil(fx + fw)));
+            const int ry1 = std::min(h, static_cast<int>(std::ceil(fy + fh)));
+            for(int y = ry0; y < ry1; ++y)
+            {
+                std::memcpy(&fb[(static_cast<size_t>(y) * w + rx0) * 4],
+                            &repaint[(static_cast<size_t>(y) * w + rx0) * 4], static_cast<size_t>(rx1 - rx0) * 4);
+            }
+        };
+
+        repaint_rect(f.dirty_x, f.dirty_y, f.dirty_w, f.dirty_h);
+        if(f.dirty2_w > 0.f && f.dirty2_h > 0.f)
+        {
+            repaint_rect(f.dirty2_x, f.dirty2_y, f.dirty2_w, f.dirty2_h);
+        }
+
+        return fb;
+    };
+
+    std::string rows;
+    for(int i = 0; i < 30; ++i)
+    {
+        rows += "<div style='height:30px'>row " + std::to_string(i) + "</div>";
+    }
+
+    const std::string html = "<body style='margin:0;background:#101418'>"
+                             "<div style='height:40px;background:#222833'>header</div>"
+                             "<div id='list' style='height:200px;overflow:auto;background:#181d26'>" +
+                             rows +
+                             "</div>"
+                             "<div style='height:40px;background:#222833'>footer</div></body>";
+
+    const int W = 300, H = 400;
+    const uint32_t BG = 0xFF000000u;
+
+    Fixture fx;
+    LhuFrame f = fx.render(html.c_str(), static_cast<float>(W), static_cast<float>(H));
+    std::vector<uint8_t> prev = raster(f, W, H, BG);
+
+    // A scroll, recorded the way the host records it: no layout in between.
+    check(lhu_scroll(fx.ctx, 0.f, 40.f, 150.f, 140.f) > 0, "the list took the scroll");
+    f = fx.rerecord();
+
+    check(f.dirty_mode == LHU_DIRTY_MODE_SCROLL, "a pure scroll reports a translation");
+    check_near(f.scroll_dy, -40.f, 0.01f, "content moved up by the scrolled amount");
+    check_near(f.scroll_dx, 0.f, 0.01f, "and did not move sideways");
+    // The copy destination is the scrolled window minus the strip that
+    // scrolled in and the whole-pixel margins at both edges.
+    check(f.scroll_h > 120.f && f.scroll_h <= 200.5f, "the copy spans most of the scrolled window");
+    check(f.dirty_h < 60.f, "the strip is the entered band plus padding, not the viewport");
+    check(f.dirty_y > f.scroll_y + f.scroll_h - 60.f, "and sits at the bottom edge, where content entered");
+
+    std::vector<uint8_t> full = raster(f, W, H, BG);
+    std::vector<uint8_t> sim  = apply_scroll(prev, full, W, H, f);
+    check(sim == full, "copy + strip repaint reproduces the full repaint byte for byte");
+    prev = std::move(sim);
+
+    // Scrolling back moves the strip to the top.
+    check(lhu_scroll(fx.ctx, 0.f, -40.f, 150.f, 140.f) > 0, "the list scrolled back");
+    f = fx.rerecord();
+    check(f.dirty_mode == LHU_DIRTY_MODE_SCROLL, "the way back is a translation too");
+    check_near(f.scroll_dy, 40.f, 0.01f, "content moved down");
+    check(f.dirty_y < f.scroll_y + 60.f, "the strip is at the top edge now");
+
+    full = raster(f, W, H, BG);
+    sim  = apply_scroll(prev, full, W, H, f);
+    check(sim == full, "the upward copy is exact too");
+
+    // Two scrolls that cancel are byte-identical frames.
+    lhu_scroll(fx.ctx, 0.f, 40.f, 150.f, 140.f);
+    lhu_scroll(fx.ctx, 0.f, -40.f, 150.f, 140.f);
+    f = fx.rerecord();
+    check(f.dirty_mode == LHU_DIRTY_MODE_NONE, "a scroll that nets to zero repaints nothing");
+
+    // A hover restyle in the same frame is not a translation; the diff must
+    // notice and fall back rather than copy a recoloured row around.
+    {
+        std::string hover_rows;
+        for(int i = 0; i < 30; ++i)
+        {
+            hover_rows += "<div class='r' style='height:30px'>row " + std::to_string(i) + "</div>";
+        }
+        const std::string hover_html = "<body style='margin:0;background:#101418'>"
+                                       "<style>.r:hover{background:#553311}</style>"
+                                       "<div id='list' style='height:200px;overflow:auto'>" +
+                                       hover_rows + "</div></body>";
+
+        Fixture hv;
+        hv.render(hover_html.c_str(), static_cast<float>(W), static_cast<float>(H));
+        lhu_mouse_move(hv.ctx, 150.f, 100.f);
+        hv.rerecord();
+
+        lhu_mouse_move(hv.ctx, 150.f, 130.f); // hover moves a row...
+        lhu_scroll(hv.ctx, 0.f, 40.f, 150.f, 100.f); // ...and the list scrolls
+        f = hv.rerecord();
+        check(f.dirty_mode != LHU_DIRTY_MODE_SCROLL, "hover + scroll in one frame is not sold as a translation");
+    }
+
+    // Content scrolling across a gradient background cannot be copied: the
+    // pixels under the content change with position.
+    {
+        const std::string grad_html = "<body style='margin:0'>"
+                                      "<div id='list' style='height:200px;overflow:auto;"
+                                      "background:linear-gradient(#204060,#101418)'>" +
+                                      rows + "</div></body>";
+        Fixture gr;
+        gr.render(grad_html.c_str(), static_cast<float>(W), static_cast<float>(H));
+        lhu_scroll(gr.ctx, 0.f, 40.f, 150.f, 100.f);
+        f = gr.rerecord();
+        check(f.dirty_mode != LHU_DIRTY_MODE_SCROLL, "a gradient under the content disarms the copy");
+    }
+
+    // A list that fills the whole surface, scrolled without a layout call in
+    // between -- exactly the page and flow the Unity play-mode test drives.
+    {
+        std::string prows;
+        for(int i = 0; i < 30; ++i)
+        {
+            prows += std::string("<div style='height:30px;background:") + (i % 2 == 0 ? "#ff0000" : "#0000ff") +
+                     "'></div>";
+        }
+        const std::string ph = "<body style='margin:0;background:#101418'>"
+                               "<div id='list' style='height:300px;overflow:auto'>" +
+                               prows + "</div></body>";
+        Fixture pv;
+        pv.render(ph.c_str(), 300.f, 300.f);
+        check(lhu_scroll(pv.ctx, 0.f, 30.f, 150.f, 150.f) > 0, "the surface-sized list took the scroll");
+        f = pv.rerecord();
+        check(f.dirty_mode == LHU_DIRTY_MODE_SCROLL, "a surface-sized list is still a translation");
+    }
+
+    // Horizontal scrolling exercises the other axis of every interval above.
+    {
+        std::string cells;
+        for(int i = 0; i < 30; ++i)
+        {
+            cells += "<div style='display:inline-block;width:60px;height:100px'>c" + std::to_string(i) + "</div>";
+        }
+        const std::string h_html = "<body style='margin:0;background:#101418'>"
+                                   "<div id='strip' style='height:120px;overflow:auto;white-space:nowrap;"
+                                   "background:#181d26'>" +
+                                   cells + "</div></body>";
+        Fixture hz;
+        LhuFrame hf = hz.render(h_html.c_str(), static_cast<float>(W), static_cast<float>(H));
+        std::vector<uint8_t> hprev = raster(hf, W, H, BG);
+
+        check(lhu_scroll(hz.ctx, 40.f, 0.f, 150.f, 60.f) > 0, "the strip took a horizontal scroll");
+        hf = hz.rerecord();
+        check(hf.dirty_mode == LHU_DIRTY_MODE_SCROLL, "a horizontal scroll is a translation too");
+        check_near(hf.scroll_dx, -40.f, 0.01f, "content moved left");
+        check(hf.dirty_w < 60.f, "the strip is the entered column plus padding");
+
+        std::vector<uint8_t> hfull = raster(hf, W, H, BG);
+        std::vector<uint8_t> hsim  = apply_scroll(hprev, hfull, W, H, hf);
+        check(hsim == hfull, "the horizontal copy is exact");
+    }
+}
+
 // Input events must say WHAT they dirtied, not just that they did. A :hover
 // that recolours reports paint; a :hover that resizes reports layout too. The
 // host draws stale geometry if layout-dirty is under-reported, and pays a full
@@ -1049,6 +1265,7 @@ int main(int argc, char** argv)
     test_glyph_cache_churn();
     test_kern_cache();
     test_dirty_region();
+    test_scroll_partial_redraw();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
     test_demo_page();

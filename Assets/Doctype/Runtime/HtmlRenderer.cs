@@ -20,6 +20,7 @@ namespace Doctype
         private static readonly int ImageTexId = Shader.PropertyToID("_ImageTex");
         private static readonly int GradSizeId = Shader.PropertyToID("_GradSize");
         private static readonly int ClearColorId = Shader.PropertyToID("_Color");
+        private static readonly int ScrollScratchId = Shader.PropertyToID("_DoctypeScrollScratch");
 
         private readonly HtmlMeshBuilder _meshBuilder = new HtmlMeshBuilder();
         private readonly CommandBuffer _cb = new CommandBuffer { name = "Doctype" };
@@ -194,53 +195,34 @@ namespace Doctype
                               : clearColor;
 
             _cb.Clear();
+
+            // The copy has to be queued before the repaint. A translation the
+            // texel copy cannot express (fractional pixels at this scale, a
+            // platform without RT copies) degrades to one full repaint.
+            if (mode == HtmlDirtyMode.Scroll && !EmitScrollCopy(frame, target, documentSize))
+            {
+                mode = HtmlDirtyMode.Full;
+                LastDirtyMode = mode;
+            }
+
             _cb.SetRenderTarget(target);
 
             // Document space: origin top-left, y down, one unit = one CSS pixel.
             _cb.SetViewProjectionMatrices(Matrix4x4.identity,
                                           Matrix4x4.Ortho(0f, documentSize.x, documentSize.y, 0f, -1f, 1f));
 
-            if (mode == HtmlDirtyMode.Rect)
+            if (mode == HtmlDirtyMode.Rect || mode == HtmlDirtyMode.Scroll)
             {
-                // Document units to target pixels, padded a pixel outward so
-                // rounding can never shave the repaint short of the dirt.
-                float sx = target.width / documentSize.x;
-                float sy = target.height / documentSize.y;
+                RepaintRegion(frame.DirtyX, frame.DirtyY, frame.DirtyW, frame.DirtyH,
+                              target, documentSize, clear, updateLastDirty: true);
 
-                int px0 = Mathf.Clamp(Mathf.FloorToInt(frame.DirtyX * sx) - 1, 0, target.width);
-                int py0 = Mathf.Clamp(Mathf.FloorToInt(frame.DirtyY * sy) - 1, 0, target.height);
-                int px1 = Mathf.Clamp(Mathf.CeilToInt((frame.DirtyX + frame.DirtyW) * sx) + 1, 0, target.width);
-                int py1 = Mathf.Clamp(Mathf.CeilToInt((frame.DirtyY + frame.DirtyH) * sy) + 1, 0, target.height);
-
-                if (px1 <= px0 || py1 <= py0)
+                // A scroll can carry a second rect: the sliver on the scrolled
+                // window's opposite edge that the whole-pixel copy cannot move.
+                if (mode == HtmlDirtyMode.Scroll && frame.Dirty2W > 0f && frame.Dirty2H > 0f)
                 {
-                    return;
+                    RepaintRegion(frame.Dirty2X, frame.Dirty2Y, frame.Dirty2W, frame.Dirty2H,
+                                  target, documentSize, clear, updateLastDirty: false);
                 }
-
-                // The scissor is given in target pixels with a bottom-left
-                // origin, the document counts y downward from the top; flip.
-                var scissor = new Rect(px0, target.height - py1, px1 - px0, py1 - py0);
-                LastDirtyPixels = new RectInt(px0, py0, px1 - px0, py1 - py0);
-
-                _cb.EnableScissorRect(scissor);
-
-                // Clear by drawing (see RegionClear): a scissored quad in
-                // document space over the dirty rect, Blend One Zero.
-                _clearMaterial.SetColor(ClearColorId, clear);
-                var region = Matrix4x4.TRS(new Vector3(frame.DirtyX, frame.DirtyY, 0f),
-                                           Quaternion.identity,
-                                           new Vector3(frame.DirtyW, frame.DirtyH, 1f));
-                _cb.DrawMesh(_clearMesh, region, _clearMaterial, 0, 0);
-
-                // The whole mesh, scissored: quads outside the rect cost their
-                // vertices (microseconds) and no fragments, which beats working
-                // out on the CPU which of them overlap the region.
-                if (_meshBuilder.QuadCount > 0)
-                {
-                    _cb.DrawMesh(_meshBuilder.Mesh, Matrix4x4.identity, _material, 0, 0);
-                }
-
-                _cb.DisableScissorRect();
             }
             else
             {
@@ -255,6 +237,126 @@ namespace Doctype
             }
 
             Graphics.ExecuteCommandBuffer(_cb);
+        }
+
+        /// <summary>
+        /// Queues one scissored clear + draw over a dirty rect (document
+        /// space). The scissor is what keeps every other pixel of the retained
+        /// target untouched.
+        /// </summary>
+        private void RepaintRegion(float dirtyX, float dirtyY, float dirtyW, float dirtyH,
+                                   RenderTexture target, Vector2 documentSize, Color clear, bool updateLastDirty)
+        {
+            // Document units to target pixels, padded a pixel outward so
+            // rounding can never shave the repaint short of the dirt.
+            float sx = target.width / documentSize.x;
+            float sy = target.height / documentSize.y;
+
+            int px0 = Mathf.Clamp(Mathf.FloorToInt(dirtyX * sx) - 1, 0, target.width);
+            int py0 = Mathf.Clamp(Mathf.FloorToInt(dirtyY * sy) - 1, 0, target.height);
+            int px1 = Mathf.Clamp(Mathf.CeilToInt((dirtyX + dirtyW) * sx) + 1, 0, target.width);
+            int py1 = Mathf.Clamp(Mathf.CeilToInt((dirtyY + dirtyH) * sy) + 1, 0, target.height);
+
+            if (px1 <= px0 || py1 <= py0)
+            {
+                return;
+            }
+
+            // The scissor is given in target pixels with a bottom-left
+            // origin, the document counts y downward from the top; flip.
+            var scissor = new Rect(px0, target.height - py1, px1 - px0, py1 - py0);
+            if (updateLastDirty)
+            {
+                LastDirtyPixels = new RectInt(px0, py0, px1 - px0, py1 - py0);
+            }
+
+            _cb.EnableScissorRect(scissor);
+
+            // Clear by drawing (see RegionClear): a scissored quad in
+            // document space over the dirty rect, Blend One Zero.
+            _clearMaterial.SetColor(ClearColorId, clear);
+            var region = Matrix4x4.TRS(new Vector3(dirtyX, dirtyY, 0f),
+                                       Quaternion.identity,
+                                       new Vector3(dirtyW, dirtyH, 1f));
+            _cb.DrawMesh(_clearMesh, region, _clearMaterial, 0, 0);
+
+            // The whole mesh, scissored: quads outside the rect cost their
+            // vertices (microseconds) and no fragments, which beats working
+            // out on the CPU which of them overlap the region.
+            if (_meshBuilder.QuadCount > 0)
+            {
+                _cb.DrawMesh(_meshBuilder.Mesh, Matrix4x4.identity, _material, 0, 0);
+            }
+
+            _cb.DisableScissorRect();
+        }
+
+        /// <summary>
+        /// Queues the pixel move of a <see cref="HtmlDirtyMode.Scroll"/> frame:
+        /// the still-valid part of the scrolled region rides along as two texel
+        /// copies (into a scratch target and back shifted, because a texture
+        /// cannot copy onto itself), and only the strip that scrolled in is
+        /// left for the repaint. Returns false when the move cannot be
+        /// expressed exactly, in which case the caller must repaint fully.
+        /// </summary>
+        private bool EmitScrollCopy(in HtmlFrame frame, RenderTexture target, Vector2 documentSize)
+        {
+            if ((SystemInfo.copyTextureSupport & CopyTextureSupport.RTToTexture) == 0)
+            {
+                return false;
+            }
+
+            float sx = target.width / documentSize.x;
+            float sy = target.height / documentSize.y;
+
+            // A texel copy cannot resample: the translation and the region must
+            // land on whole pixels, or every scroll frame would blur a little.
+            // Native guarantees whole document pixels; a fractional scale
+            // between document and target re-breaks that, and falls back.
+            if (!ToPixel(frame.ScrollDx * sx, out int tx) || !ToPixel(frame.ScrollDy * sy, out int ty) ||
+                !ToPixel(frame.ScrollX * sx, out int dx0) || !ToPixel(frame.ScrollY * sy, out int dy0) ||
+                !ToPixel((frame.ScrollX + frame.ScrollW) * sx, out int dx1) ||
+                !ToPixel((frame.ScrollY + frame.ScrollH) * sy, out int dy1))
+            {
+                return false;
+            }
+
+            if (tx == 0 && ty == 0)
+            {
+                return false;
+            }
+
+            // The frame carries the copy's destination directly; the source is
+            // the destination un-translated. Both must sit inside the target.
+            int w = dx1 - dx0;
+            int h = dy1 - dy0;
+            int sx0 = dx0 - tx;
+            int sy0 = dy0 - ty;
+            if (w <= 0 || h <= 0 ||
+                dx0 < 0 || dy0 < 0 || dx1 > target.width || dy1 > target.height ||
+                sx0 < 0 || sy0 < 0 || sx0 + w > target.width || sy0 + h > target.height)
+            {
+                return false;
+            }
+
+            // Document y counts down from the top, CopyTexture from the bottom.
+            int srcY = target.height - (sy0 + h);
+            int dstY = target.height - (dy0 + h);
+
+            RenderTextureDescriptor desc = target.descriptor;
+            desc.depthBufferBits = 0;
+
+            _cb.GetTemporaryRT(ScrollScratchId, desc);
+            _cb.CopyTexture(target, 0, 0, sx0, srcY, w, h, ScrollScratchId, 0, 0, 0, 0);
+            _cb.CopyTexture(ScrollScratchId, 0, 0, 0, 0, w, h, target, 0, 0, dx0, dstY);
+            _cb.ReleaseTemporaryRT(ScrollScratchId);
+            return true;
+        }
+
+        private static bool ToPixel(float value, out int pixel)
+        {
+            pixel = Mathf.RoundToInt(value);
+            return Mathf.Abs(value - pixel) < 0.01f;
         }
 
         private void SyncFontAtlas(in HtmlFrame frame)
