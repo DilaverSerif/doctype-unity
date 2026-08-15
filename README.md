@@ -104,6 +104,15 @@ view.SetStyle("#slot3", "border-color:#3b82f6");      // no re-parse
 string id = view.ElementAt(pointInCssPixels);          // pure query, no hover change
 ```
 
+The contract between the three entry points, because using the wrong one is
+the easiest way to lose the performance the rest of this README measures:
+
+| call | use it for | cost |
+|---|---|---|
+| `LoadHtml` | structural document changes — a new screen, different markup | full parse + layout, ~12 ms of CPU on the benchmark phone; never call it per frame |
+| `SetText` | runtime text mutation — a score, a timer, a name | incremental: ~1 ms of CPU and a partial redraw |
+| `SetStyle` | runtime visual or layout mutation — a colour, a position, a bar width | incremental: ~1 ms of CPU and a partial redraw |
+
 The package README under [`Assets/Doctype/`](Assets/Doctype/README.md)
 covers fonts, resources, HUD layout and the input model in more depth.
 
@@ -133,16 +142,18 @@ size of a real HUD panel.
 | one inline style changed per frame | 383 | **1.08** | **3.50** | 165 |
 | scrolled every frame | 410 | 1.45 | **4.34** | 183 |
 | resized every frame | 412 | 4.45 | **8.53** | 183 |
-| re-parsed every frame | 384 | 12.25 | **4.22** | 171 |
+| re-parsed every frame (negative control) | 384 | 12.25 | **4.22** | 171 |
 | four panels, one text node each | 1532 | **2.81** | **5.16** | 2729 |
 
-### A HUD that is not changing is free
+### An unchanged HUD does no renderer work
 
-Zero CPU, zero bytes uploaded, and 1.9 ms of GPU over the game-only baseline for
-four panels and 1524 quads. That is not a rounding artifact: the view skips
-layout, recording, mesh build and draw entirely when nothing has invalidated it,
-so an idle page costs one `if`. For UI that updates a few times a second, the
-work is already done.
+An unchanged Doctype document performs no parse, layout, recording, mesh
+upload, or offscreen redraw. The RenderTexture still incurs the normal Unity
+compositing cost when displayed — that is the 0.4 ms (one panel) to 1.9 ms
+(four panels, 1524 quads) of GPU above the game-only baseline in the table,
+and it scales with surface area the way any texture on a Canvas does, not
+with document complexity. On the renderer's side an idle page costs one `if`;
+for UI that updates a few times a second, the work is already done.
 
 ### The cost is pixels, not geometry
 
@@ -291,6 +302,12 @@ and a check that skips the parse entirely when the markup is byte-identical to
 what is already loaded. Which is why the API pushes you toward `SetText` and
 `SetStyle` instead.
 
+The benchmark keeps the scenario anyway (`hud-reload`) as a **negative
+control**, not a workload: it is the baseline that shows what the mutation
+path saves, and a tripwire that fires if the parse-skip or the trimmed
+stylesheet ever regress. Read its 12.25 ms as "what the wrong API costs",
+not as something Doctype does per frame.
+
 ---
 
 ## What measuring actually found
@@ -361,7 +378,7 @@ this reason; the scale setter had not.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 137 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 140 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 693 frame comparisons
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```

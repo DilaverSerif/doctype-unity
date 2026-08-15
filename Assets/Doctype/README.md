@@ -67,15 +67,18 @@ Universal (arm64 + x86_64) `.bundle` üretip
 `Assets/Doctype/Plugins/macOS/` altına koyar. Tek gereksinim Xcode,
 CMake gerekmiyor.
 
-### Android (kod hazır, bu makinede derlenmedi)
+### Android (bu makinede derlendi, cihazda ölçüldü)
 
 ```bash
-./Native/build_android.sh arm64-v8a
+./Native/build_android.sh
 ```
 
-Gereksinimler: Android NDK, `cmake` + `ninja`, ve Unity'nin Android Build
-Support modülü. **Bu makinede üçü de kurulu değil**, dolayısıyla Android yolu
-yazıldı ama çalıştırılmadı; ilk derlemeyi doğrulanmamış kabul edin.
+Gereksinim: Unity'nin Android Build Support modülü. NDK oradan bulunuyor;
+`cmake` + `ninja` da Unity'nin Android SDK'sıyla geliyor
+(`PlaybackEngines/AndroidPlayer/SDK/cmake/<sürüm>/bin` PATH'e eklenmeli,
+yoksa `brew install cmake ninja`). Çıktı
+`Assets/Doctype/Plugins/Android/libs/arm64-v8a/libDoctype.so`; kök
+README'deki bütün telefon ölçümleri bu kütüphaneyle alındı.
 
 ### iOS
 
@@ -91,7 +94,19 @@ derleyip Xcode projesine ekleyin. `HtmlNative.Lib` iOS'ta zaten
 var view = gameObject.AddComponent<HtmlView>();
 view.LoadHtml("<body style='font-family:sans-serif'><h1>Merhaba</h1></body>");
 // view.Texture -> RenderTexture
+
+view.SetText("#score", "1280");                   // parse yok, artımlı
+view.SetStyle("#bar", "width:64%");               // parse yok, artımlı
 ```
+
+Üç giriş noktasının kontratı — yanlış olanı kullanmak, ölçülen performansı
+kaybetmenin en kolay yolu:
+
+| Çağrı | Ne için | Maliyet |
+|---|---|---|
+| `LoadHtml` | Yapısal/doküman değişiklikleri: yeni ekran, farklı markup | Tam parse + layout; telefonda ~12 ms CPU. Asla kare başına çağırmayın. |
+| `SetText` | Çalışma zamanı metin mutasyonu: skor, sayaç, isim | Artımlı; ~1 ms CPU + kısmi redraw |
+| `SetStyle` | Çalışma zamanı görsel/layout mutasyonu: renk, konum, bar genişliği | Artımlı; ~1 ms CPU + kısmi redraw |
 
 uGUI ile:
 
@@ -151,8 +166,11 @@ litehtml font yüklemez; siz vermelisiniz. İki yol:
 LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 ```
 
-58 assertion. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
+140 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
 rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
+Retained quad cache'in doğruluğu ayrı bir araçla kanıtlanıyor:
+`lhu_verify_quadcache`, mutasyon/scroll/hover senaryolarında cache'li ve
+cache'siz kayıtları kare kare karşılaştırır (693 kare karşılaştırması).
 
 Metin ölçüleri [Ahem](https://github.com/litehtml/litehtml/tree/master/containers/test/fonts)
 fontuyla test ediliyor: her glyph tam 1em genişliğinde dolu bir kare olduğu için
@@ -176,8 +194,9 @@ olmadığı için tıklama `AnchorClicked` üzerinden C#'a düşüyor ve control
 değiştiriyor. Sayfa girişinde 0.22 sn'lik kayma + solma geçişi var.
 
 **Animasyon.** litehtml'de CSS `animation`/`transition` **yok**. Değerler C#'ta
-hesaplanıp inline style olarak yazılıyor, sayfa her karede yeniden parse +
-layout ediliyor. Animasyon sayfası bilerek farklı renderer yollarını zorluyor:
+hesaplanıp `SetStyle` ile inline style olarak yazılıyor: parse yok, layout
+artımlı, redraw yalnız değişen bölge. Animasyon sayfası bilerek farklı
+renderer yollarını zorluyor:
 dönen konik gradient, nefes alan radial gradient, boyut+renk atan yuvarlak kare,
 28 çubukluk sinüs dalgası, kayan bar.
 
@@ -189,21 +208,15 @@ Performans sayfasından belge içinden `fps://30` gibi linklerle değiştirilebi
 
 ### Ölçülen maliyet
 
-Animasyon sayfası her karede yeniden kurulurken (307 quad, 680x460, M-serisi Mac):
-
-| Aşama | Süre |
-|---|---|
-| Parse (gumbo + CSS) | ~1.7 ms |
-| Layout | ~0.03 ms |
-| Kayıt + çizim | ~0.5 ms |
-| **Toplam** | **~2.3 ms ort. / 2.8 ms en kötü** |
-
-Dikkat çeken nokta: **maliyet neredeyse tamamen yeniden parse**, layout pratikte
-bedava. 60 fps bütçesinin (16.6 ms) ~%14'ü. Her karede animasyon şart değilse
-`Animate`'i kapatın; şartsa bir sonraki optimizasyon adımı DOM'u yeniden parse
-etmeden güncellemek (litehtml'in `create_element` / `append_children_from_string`
-API'lerini C ABI'ye açmak) olur; layout zaten ucuz olduğu için kazanç doğrudan
-o 1.7 ms'den gelir.
+Güncel ve ayrıntılı ölçümler kök [README](../../README.md)'nin
+"Measurements" bölümünde (Xiaomi 22101316I, Vulkan, senaryo başına 300 kare).
+Özet: değişmeyen bir sayfa renderer tarafında **hiçbir iş** yapmaz (parse,
+layout, kayıt, mesh upload, offscreen redraw yok; RenderTexture'ın Canvas'ta
+composite edilme maliyeti normal şekilde devam eder). Kare başına bir
+`SetText`/`SetStyle` ~1 ms CPU + ~3.4 ms GPU. Her karede `LoadHtml` çağırmak
+ise ~12 ms CPU'luk bilinçli bir **negatif kontroldür** (benchmark'taki
+`hud-reload` satırı): yanlış API'nin bedelini ölçmek için var, gerçek
+kullanım yolu değil.
 
 ### Unity (EditMode, gerçek GPU)
 
@@ -211,7 +224,7 @@ o 1.7 ms'den gelir.
 Unity -batchmode -projectPath . -runTests -testPlatform EditMode -testResults results.xml
 ```
 
-22 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
+43 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
 **kullanmayın** (GPU testleri anlamsızlaşır).
 
 `HtmlRenderTests` gerçek bir `RenderTexture`'a çizip `ReadPixels` ile geri
@@ -224,7 +237,7 @@ patlar.
 Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -testResults pm.xml
 ```
 
-16 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
+37 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
 sürüyor; PlayMode testleri ise `HtmlView`'ın **MonoBehaviour yaşam
 döngüsünden** geçiyor: `OnEnable`, `LateUpdate` render döngüsü, yüzeyin yeniden
 oluşturulması, `Destroy` sonrası temizlik. Ömür ve kare-kare hatalar burada yaşar.
@@ -278,9 +291,11 @@ kırpma, metin dekorasyonları, liste işaretleyicileri, `:hover`, `<a>` tıklam
 
 ## Bilinen sınırlar
 
-- Vertex başına 144 bayt. 2000 quad'lık bir sayfa kare başına ~1.1 MB vertex
-  yüklüyor. Instancing veya structured buffer'a geçilebilir; GLES3 uyumluluğu
-  için bilinçli olarak yapılmadı.
+- Vertex başına 108 bayt (yarıçap, kenarlık ve klip alanları half precision).
+  2000 quad'lık bir sayfa tam yeniden kayıtta ~850 KB vertex yükler; kısmi
+  güncellemede yalnız değişen kareler yüklenir. Cihaz ölçümü bant genişliğinin
+  darboğaz olmadığını gösterdi; instancing/structured buffer bu yüzden (ve
+  GLES3 uyumluluğu için) yapılmadı.
 - İç içe yuvarlak kırpmalarda en içteki yarıçaplar kullanılıyor (yaklaşım).
 - `border-style` yalnızca `solid`; `dashed`/`dotted`/`double` solid'e düşüyor.
 

@@ -346,6 +346,64 @@ bool structure_changed(const std::vector<StructuralKey>& a, const std::vector<St
 
 } // namespace
 
+// --- C ABI exception boundary ----------------------------------------------
+//
+// No C++ exception may unwind through the extern "C" functions below: the
+// caller is a P/Invoke frame, and an exception crossing it is undefined
+// behaviour that surfaces on Android as an unexplained process abort with a
+// foreign stack. Every export whose body does more than read a field runs as
+// a function-try-block closed by one of these handlers, which turn a throw
+// into the function's failure return plus lhu_last_error().
+//
+// The rule for new exports: end the body with LHU_API_CATCH(ctx, fallback)
+// (or the _VOID variant). Only a body that provably cannot throw -- returning
+// a constant or copying scalars -- may go without.
+
+namespace
+{
+// The handler itself must not throw: an exception leaving a catch clause of a
+// function-try-block propagates to the caller, which is exactly the hole this
+// boundary closes. The assignment can allocate; if that fails too, fall back
+// to clear(), which cannot.
+void set_last_error_noexcept(LhuContext* ctx, const char* what) noexcept
+{
+    if(!ctx)
+    {
+        return;
+    }
+    try
+    {
+        ctx->last_error = what;
+    }
+    catch(...)
+    {
+        ctx->last_error.clear();
+    }
+}
+} // namespace
+
+#define LHU_API_CATCH(ctx, fallback)                                    \
+    catch(const std::exception& e)                                      \
+    {                                                                   \
+        set_last_error_noexcept(ctx, e.what());                         \
+        return fallback;                                                \
+    }                                                                   \
+    catch(...)                                                          \
+    {                                                                   \
+        set_last_error_noexcept(ctx, "unknown native exception");       \
+        return fallback;                                                \
+    }
+
+#define LHU_API_CATCH_VOID(ctx)                                         \
+    catch(const std::exception& e)                                      \
+    {                                                                   \
+        set_last_error_noexcept(ctx, e.what());                         \
+    }                                                                   \
+    catch(...)                                                          \
+    {                                                                   \
+        set_last_error_noexcept(ctx, "unknown native exception");       \
+    }
+
 extern "C" {
 
 const char* lhu_version(void)
@@ -359,22 +417,38 @@ int32_t lhu_quad_size(void)
 }
 
 LhuContext* lhu_create(const LhuHostCallbacks* host)
+try
 {
     LhuHostCallbacks cb {};
     if(host)
     {
         cb = *host;
     }
+    // nothrow covers the allocation itself; the try covers the constructor,
+    // which builds the font manager and container and is not proven
+    // throw-free. There is no context to carry lhu_last_error() yet, so a
+    // failed create is just null.
     return new(std::nothrow) LhuContext(cb);
+}
+catch(...)
+{
+    return nullptr;
 }
 
 void lhu_destroy(LhuContext* ctx)
+try
 {
     delete ctx;
+}
+catch(...)
+{
+    // Destructors are noexcept by default, so this is expected to be
+    // unreachable -- but "expected" is not a boundary guarantee.
 }
 
 int32_t lhu_register_font(LhuContext* ctx, const char* family, int32_t weight, int32_t italic, const uint8_t* data,
                           int32_t len)
+try
 {
     if(!ctx || len <= 0)
     {
@@ -392,8 +466,10 @@ int32_t lhu_register_font(LhuContext* ctx, const char* family, int32_t weight, i
     }
     return ok ? 1 : 0;
 }
+LHU_API_CATCH(ctx, 0)
 
 void lhu_set_default_font(LhuContext* ctx, const char* family, float size)
+try
 {
     if(!ctx)
     {
@@ -404,8 +480,10 @@ void lhu_set_default_font(LhuContext* ctx, const char* family, float size)
     ctx->fonts.set_default_family(family);
     ctx->container.set_default_font(family ? family : "sans-serif", size > 0.f ? size : 16.f);
 }
+LHU_API_CATCH_VOID(ctx)
 
 void lhu_set_master_css(LhuContext* ctx, int32_t mode)
+try
 {
     if(ctx)
     {
@@ -413,8 +491,10 @@ void lhu_set_master_css(LhuContext* ctx, int32_t mode)
         ctx->master_css_mode = mode;
     }
 }
+LHU_API_CATCH_VOID(ctx)
 
 void lhu_set_viewport(LhuContext* ctx, float width, float height)
+try
 {
     if(ctx && ctx->container.set_viewport(width, height))
     {
@@ -425,8 +505,10 @@ void lhu_set_viewport(LhuContext* ctx, float width, float height)
         ctx->styles_stale = true;
     }
 }
+LHU_API_CATCH_VOID(ctx)
 
 void lhu_set_device_scale(LhuContext* ctx, float scale)
+try
 {
     // The same-value guard is load-bearing: the host re-sends the scale on
     // every layout, and treating each of those as a change invalidated the
@@ -438,8 +520,10 @@ void lhu_set_device_scale(LhuContext* ctx, float scale)
         ctx->invalidate_layout_and_cache();
     }
 }
+LHU_API_CATCH_VOID(ctx)
 
 int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* user_css)
+try
 {
     if(!ctx || !html)
     {
@@ -518,8 +602,10 @@ int32_t lhu_load_html(LhuContext* ctx, const char* html, const char* user_css)
     ctx->last_error.clear();
     return 1;
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8)
+try
 {
     if(!ctx || !ctx->doc || !selector || !utf8)
     {
@@ -758,8 +844,10 @@ int32_t lhu_set_text(LhuContext* ctx, const char* selector, const char* utf8)
 
     return 1;
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css)
+try
 {
     if(!ctx || !ctx->doc || !selector || !css)
     {
@@ -925,6 +1013,7 @@ int32_t lhu_set_style(LhuContext* ctx, const char* selector, const char* css)
 
     return 1;
 }
+LHU_API_CATCH(ctx, 0)
 
 namespace
 {
@@ -1016,6 +1105,7 @@ bool try_sublayout(LhuContext* ctx, const litehtml::element::ptr& mutated)
 } // namespace
 
 float lhu_layout(LhuContext* ctx, float max_width)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -1100,6 +1190,7 @@ float lhu_layout(LhuContext* ctx, float max_width)
 
     return ctx->doc_height;
 }
+LHU_API_CATCH(ctx, 0.f)
 
 namespace
 {
@@ -1796,6 +1887,7 @@ void compute_dirty_region(LhuContext* ctx, LhuFrame* out, bool trusted)
 } // namespace
 
 void lhu_record(LhuContext* ctx, LhuFrame* out)
+try
 {
     if(!out)
     {
@@ -1919,6 +2011,25 @@ void lhu_record(LhuContext* ctx, LhuFrame* out)
     // ignored, the next record starts from what the next scrolls report.
     ctx->clear_scroll_hint();
 }
+catch(const std::exception& e)
+{
+    set_last_error_noexcept(ctx, e.what());
+    // A throw mid-record leaves *out half-filled -- possibly with pointers
+    // into buffers whose construction was abandoned. An empty frame is the
+    // only result the host can act on safely.
+    if(out)
+    {
+        *out = LhuFrame {};
+    }
+}
+catch(...)
+{
+    set_last_error_noexcept(ctx, "unknown native exception");
+    if(out)
+    {
+        *out = LhuFrame {};
+    }
+}
 
 namespace
 {
@@ -2015,6 +2126,7 @@ void topmost_id_at(const std::shared_ptr<litehtml::render_item>& ri, litehtml::p
 } // namespace
 
 int32_t lhu_element_at(LhuContext* ctx, float x, float y, char* out_id, int32_t len)
+try
 {
     if(out_id && len > 0)
     {
@@ -2043,8 +2155,10 @@ int32_t lhu_element_at(LhuContext* ctx, float x, float y, char* out_id, int32_t 
 
     return 1;
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_element_rect(LhuContext* ctx, const char* selector, float* x, float* y, float* w, float* h)
+try
 {
     if(!ctx || !ctx->doc || !selector)
     {
@@ -2090,6 +2204,7 @@ int32_t lhu_element_rect(LhuContext* ctx, const char* selector, float* x, float*
     ctx->last_error.clear();
     return 1;
 }
+LHU_API_CATCH(ctx, 0)
 
 float lhu_doc_width(LhuContext* ctx)
 {
@@ -2128,6 +2243,7 @@ int32_t classify_input_change(LhuContext* ctx, bool changed)
 } // namespace
 
 int32_t lhu_mouse_move(LhuContext* ctx, float x, float y)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -2141,8 +2257,10 @@ int32_t lhu_mouse_move(LhuContext* ctx, float x, float y)
                                                  litehtml::pixel_t(y), kIgnoreRedraw);
     return classify_input_change(ctx, changed);
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_mouse_down(LhuContext* ctx, float x, float y)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -2154,8 +2272,10 @@ int32_t lhu_mouse_down(LhuContext* ctx, float x, float y)
                                                    litehtml::pixel_t(y), kIgnoreRedraw);
     return classify_input_change(ctx, changed);
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_mouse_up(LhuContext* ctx, float x, float y)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -2167,8 +2287,10 @@ int32_t lhu_mouse_up(LhuContext* ctx, float x, float y)
                                                  litehtml::pixel_t(y), kIgnoreRedraw);
     return classify_input_change(ctx, changed);
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_mouse_leave(LhuContext* ctx)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -2179,8 +2301,10 @@ int32_t lhu_mouse_leave(LhuContext* ctx)
     const bool changed = ctx->doc->on_mouse_leave(kIgnoreRedraw);
     return classify_input_change(ctx, changed);
 }
+LHU_API_CATCH(ctx, 0)
 
 int32_t lhu_scroll(LhuContext* ctx, float dx, float dy, float x, float y)
+try
 {
     if(!ctx || !ctx->doc)
     {
@@ -2221,6 +2345,7 @@ int32_t lhu_scroll(LhuContext* ctx, float dx, float dy, float x, float y)
     }
     return static_cast<int32_t>(scrolled.size());
 }
+LHU_API_CATCH(ctx, 0)
 
 void lhu_exp_set_enabled(LhuContext* ctx, int32_t enabled)
 {
@@ -2318,6 +2443,7 @@ void lhu_exp_stats(LhuContext* ctx, int32_t* out_enabled, int32_t* out_skipped, 
 }
 
 int64_t lhu_quadcache_stat(LhuContext* ctx, int32_t which)
+try
 {
     if(!ctx)
     {
@@ -2342,6 +2468,7 @@ int64_t lhu_quadcache_stat(LhuContext* ctx, int32_t which)
     default:                    return -1;
     }
 }
+LHU_API_CATCH(ctx, -1)
 
 const char* lhu_last_error(LhuContext* ctx)
 {

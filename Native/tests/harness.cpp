@@ -1406,6 +1406,46 @@ void test_scroll_survives_a_resent_viewport()
     check_near(w, 200.f, 0.5f, "50vw follows a viewport that actually changed");
 }
 
+// No C++ exception may cross the C ABI: the real caller is a P/Invoke frame,
+// and an escaped exception is undefined behaviour there. The harness cannot
+// inject a throw into an arbitrary export, so this drives the entry points
+// with the most throw-prone inputs the API accepts -- selector strings go
+// straight into litehtml's CSS parser -- and asserts the calls come back as
+// failures instead of not coming back at all. If none of these inputs happens
+// to throw in a future litehtml, the checks still hold; the boundary macros
+// in lhu_api.cpp are what actually guarantee containment.
+void test_abi_exception_boundary()
+{
+    std::printf("\n[abi exception boundary]\n");
+
+    Fixture fx(false);
+    fx.render("<body><div id='a'>text</div></body>", 300.f, 300.f);
+
+    const char* hostile[] = {"[", ":nth-child(", "a[href=", "::", "*::::*", ")("};
+
+    bool survived = true;
+    for(const char* sel : hostile)
+    {
+        if(lhu_set_text(fx.ctx, sel, "x") != 0 || lhu_set_style(fx.ctx, sel, "color:red") != 0)
+        {
+            survived = false;
+        }
+        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+        if(lhu_element_rect(fx.ctx, sel, &x, &y, &w, &h) != 0)
+        {
+            survived = false;
+        }
+    }
+    check(survived, "hostile selectors fail as return codes, not as crashes");
+
+    // The context is still coherent afterwards: a real mutation works and a
+    // record produces a frame.
+    check(lhu_set_text(fx.ctx, "#a", "changed") == 1, "the context still accepts a real mutation");
+    lhu_layout(fx.ctx, 300.f);
+    const LhuFrame f = fx.rerecord();
+    check(f.quad_count > 0, "and still records a frame");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1437,6 +1477,7 @@ int main(int argc, char** argv)
     test_subtree_relayout();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
+    test_abi_exception_boundary();
     test_demo_page();
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
