@@ -5,6 +5,10 @@
   "description": "HTML/CSS game UI for Unity, laid out by litehtml and drawn entirely on the GPU. No embedded browser, no CPU rasterizer, one draw call per page. Ships prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS.",
   "unity": "6000.0",
   "license": "MIT",
+  "dependencies": {
+    "com.unity.ugui": "2.0.0",
+    "com.unity.inputsystem": "1.11.0"
+  },
   "author": {
     "name": "Dilaver Serif Karakadioglu",
     "url": "https://github.com/DilaverSerif"
