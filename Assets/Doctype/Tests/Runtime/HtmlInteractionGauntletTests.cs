@@ -223,5 +223,158 @@ namespace Doctype.Tests
             // again reports "unchanged", which only holds if it really landed.
             Assert.IsFalse(_view.SetText("#n", "Sayi 49"), "the final text is the final input");
         }
+
+        [UnityTest]
+        public IEnumerator SliderDragEndsWhereTheFingerStopped()
+        {
+            // A slider the way a game builds one on this API: the thumb is a
+            // div, the game reads ElementAt on press, applies SetStyle
+            // margin-left per move, clamping to the track. The finger jitters,
+            // overshoots both ends, and settles; the thumb must end exactly
+            // under the last clamped position.
+            _view.LoadHtml("<body style='margin:0'>" +
+                           "<div id='track' style='margin:20px;width:220px;height:20px;background:#333'>" +
+                           "<div id='thumb' style='width:20px;height:20px;background:#4a6'></div>" +
+                           "</div></body>");
+            yield return Settle();
+
+            Assert.IsTrue(_view.TryGetElementRect("#track", out Rect track));
+            const float thumbWidth = 20f;
+            float travel = track.width - thumbWidth; // margin-left range [0, 200]
+
+            float margin = 0f;
+            void DragTo(float x)
+            {
+                _view.PointerMove(new Vector2(x, 30f));
+                margin = Mathf.Clamp(x - track.x - thumbWidth / 2f, 0f, travel);
+                _view.SetStyle("#thumb", "margin-left:" + margin + "px");
+            }
+
+            var grip = new Vector2(30f, 30f); // thumb center at rest
+            _view.PointerMove(grip);
+            _view.PointerDown(grip);
+            Assert.AreEqual("thumb", _view.ElementAt(grip), "the press really grabbed the thumb");
+
+            // Jitter forward, overshoot far right, whip back past the left
+            // edge, then settle mid-track. Clamping happens in game code, the
+            // way it would in production.
+            for (int x = 30; x <= 150; x += 7)
+            {
+                DragTo(x + (x % 3)); // uneven steps
+            }
+            yield return null;
+            DragTo(400f); // beyond the right end: clamps to travel
+            yield return null;
+            DragTo(-60f); // beyond the left end: clamps to 0
+            yield return null;
+            DragTo(127f); // the finger stops here
+            _view.PointerUp(new Vector2(127f, 30f));
+            yield return Settle();
+
+            float expected = Mathf.Clamp(127f - track.x - thumbWidth / 2f, 0f, travel);
+            Assert.IsTrue(_view.TryGetElementRect("#thumb", out Rect thumb));
+            Assert.AreEqual(track.x + expected, thumb.x, 0.5f, "the thumb sits under the last position");
+
+            // Pushing the final style again must report "unchanged": the last
+            // move of the storm is the one that actually landed.
+            Assert.IsFalse(_view.SetStyle("#thumb", "margin-left:" + expected + "px"),
+                "the final margin is the final input");
+        }
+
+        [UnityTest]
+        public IEnumerator ToggleSwitchParityUnderRapidClicking()
+        {
+            // A settings switch: every click flips it, so the final state is
+            // the parity of the click count -- seven rapid clicks end ON, one
+            // more ends OFF. The same screen point hits the switch body when
+            // the knob is left and the knob itself when it is right, so the
+            // test also proves child clicks bubble to the bound ancestor.
+            int fired = 0;
+            bool on = false;
+
+            _view.BindClick("sw", _ =>
+            {
+                fired++;
+                on = !on;
+                _view.SetStyle("#knob", on
+                    ? "margin-left:50px;background:#2a2"
+                    : "margin-left:0px;background:#ccc");
+            });
+
+            _view.LoadHtml("<body style='margin:0'>" +
+                           "<div id='sw' style='width:80px;height:30px;background:#555'>" +
+                           "<div id='knob' style='width:30px;height:30px;background:#ccc'></div>" +
+                           "</div></body>");
+            yield return Settle();
+
+            Assert.IsTrue(_view.TryGetElementRect("#sw", out Rect sw));
+            var onSwitch = new Vector2(65f, 15f);
+
+            // Seven clicks in two bursts: three in one frame, four in the next.
+            for (int i = 0; i < 3; i++)
+            {
+                Click(onSwitch);
+            }
+            yield return null;
+            for (int i = 0; i < 4; i++)
+            {
+                Click(onSwitch);
+            }
+            yield return Settle();
+
+            Assert.AreEqual(7, fired, "every flip was counted");
+            Assert.IsTrue(on, "odd number of clicks ends ON");
+            Assert.IsTrue(_view.TryGetElementRect("#knob", out Rect knob));
+            Assert.AreEqual(sw.x + 50f, knob.x, 0.5f, "the knob really moved right");
+
+            Click(onSwitch); // the eighth click, through the knob this time
+            yield return Settle();
+
+            Assert.AreEqual(8, fired);
+            Assert.IsFalse(on, "even number of clicks ends OFF");
+            Assert.IsTrue(_view.TryGetElementRect("#knob", out knob));
+            Assert.AreEqual(sw.x, knob.x, 0.5f, "and the knob came back");
+        }
+
+        [UnityTest]
+        public IEnumerator PressThenDragOffAndReleaseIsNotAClick()
+        {
+            // The universal cancel gesture: press a button, change your mind,
+            // slide off, let go. No click may fire -- litehtml only clicks
+            // when the pressed and released element agree.
+            int clicks = 0;
+            _view.BindClick("btn", _ => clicks++);
+
+            _view.LoadHtml("<body style='margin:0'>" +
+                           "<div id='btn' style='width:120px;height:40px;background:#235'>iptal edilebilir</div>" +
+                           "</body>");
+            yield return Settle();
+
+            // Press on the button, slide out in steps, release in empty space.
+            _view.PointerMove(OnButton);
+            _view.PointerDown(OnButton);
+            _view.PointerMove(new Vector2(140f, 60f));
+            _view.PointerMove(new Vector2(220f, 150f));
+            _view.PointerUp(new Vector2(220f, 150f));
+            yield return null;
+
+            Assert.AreEqual(0, clicks, "sliding off cancelled the press");
+
+            // The mirror image: press empty space, slide onto the button,
+            // release there. Still not a click of the button.
+            _view.PointerMove(new Vector2(220f, 150f));
+            _view.PointerDown(new Vector2(220f, 150f));
+            _view.PointerMove(OnButton);
+            _view.PointerUp(OnButton);
+            yield return null;
+
+            Assert.AreEqual(0, clicks, "releasing on a button you never pressed is not a click");
+
+            // And after both aborted gestures, a clean click still lands.
+            Click(OnButton);
+            yield return null;
+
+            Assert.AreEqual(1, clicks, "the deliberate click fires exactly once");
+        }
     }
 }

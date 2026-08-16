@@ -4,6 +4,18 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Widget patterns joined the interaction gauntlet: a slider dragged with
+  jitter and overshoot past both ends must end exactly under the last
+  clamped finger position; a toggle switch rapid-clicked in bursts must end
+  at click-count parity (and clicking its knob proves child clicks bubble
+  to the bound ancestor); pressing a button, sliding off and releasing must
+  not click, and neither must releasing over a button that was never
+  pressed.
+
 ## [0.2.1] - 2026-08-16
 
 ### Fixed
