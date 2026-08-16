@@ -229,5 +229,40 @@ namespace Doctype.Tests
                 Object.DestroyImmediate(big);
             }
         }
+
+        [Test]
+        public void RaisingMaxAtlasSizeReopensARefusedPack()
+        {
+            // The refusal's own error message says "raise Max Atlas Size";
+            // following that advice must actually reopen the attempt, even
+            // though the source set has not changed.
+            Texture2D big = SolidTexture(64, new Color32(200, 40, 40, 255));
+            try
+            {
+                _resources.MaxAtlasSize = 64;
+                _resources.Register("big1", big);
+                _resources.Register("big2", big);
+
+                int versionBefore = _resources.Version;
+
+                LogAssert.Expect(LogType.Error, new Regex("shrink|could not pack"));
+                _resources.BeginLoadImage("big1");
+                Assert.IsFalse(_resources.TryGetImageUv("big1", out _), "the small limit refuses");
+                Assert.AreEqual(versionBefore, _resources.Version);
+
+                _resources.MaxAtlasSize = 256;
+                _resources.BeginLoadImage("big1");
+
+                Assert.IsTrue(_resources.TryGetImageUv("big1", out Rect uv),
+                              "the raised limit must let the same sources pack");
+                Assert.Greater(uv.width, 0f);
+                Assert.Greater(_resources.Version, versionBefore,
+                               "content became available, so the version moves");
+            }
+            finally
+            {
+                Object.DestroyImmediate(big);
+            }
+        }
     }
 }

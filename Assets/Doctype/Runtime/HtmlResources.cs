@@ -68,7 +68,21 @@ namespace Doctype
         public int MaxAtlasSize
         {
             get => _maxAtlasSize;
-            set => _maxAtlasSize = value;
+            set
+            {
+                int wanted = Mathf.Max(1, value);
+                if (_maxAtlasSize == wanted)
+                {
+                    return;
+                }
+
+                _maxAtlasSize = wanted;
+
+                // A standing refusal was judged under the old limit; the error
+                // message tells the user to raise it, so raising it has to
+                // actually reopen the attempt.
+                _refusedAtSourceCount = -1;
+            }
         }
 
         private void Awake()
