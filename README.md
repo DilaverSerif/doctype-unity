@@ -41,6 +41,11 @@ world-space quad, a material slot on a monitor prop.
   scrolling, and dragging, including dragging an item **from one surface onto
   another**, which is what lets a HUD be several independent panels instead of
   one screen-sized sheet.
+- **Gamepad and keyboard focus.** Its own state, not pointer emulation:
+  elements opt in with `tabindex`, style themselves with `:focus`, and a
+  spatial metric (with `data-nav-*` per-direction overrides) walks the D-pad
+  between them. Activation runs the same click path a pointer takes, so
+  anchors and click events fire without a cursor existing at all.
 - **Mutation without re-parsing.** `SetText` and `SetStyle` change a text node or
   an inline style in place, and the layout they dirty is answered by re-laying
   just the touched subtree when that is provably enough, so the cost of a
@@ -429,8 +434,8 @@ this reason; the scale setter had not.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 143 checks, no Unity and no GPU
-Native/build/macos/bin/lhu_verify_quadcache   # 2433 frame comparisons, incl. the state matrix
+Native/build_macos.sh harness        # 168 checks, no Unity and no GPU
+Native/build/macos/bin/lhu_verify_quadcache   # 2734 frame comparisons, incl. the state matrix
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
 

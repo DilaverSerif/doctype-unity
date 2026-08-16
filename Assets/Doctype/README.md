@@ -154,6 +154,31 @@ OneMinusSrcAlpha` ile birleşiyor, yani renk kendi alfasıyla çarpılmış olma
 Alfası sıfır beyaz (1,1,1,0) geçerli bir premultiplied değer değildir: sayfanın
 boyamadığı her yere beyaz ekler.
 
+#### Gamepad / klavye ile gezinme
+
+Focus, pointer emülasyonu değil, kendi durumudur: hover ve `:active` neyse
+öyle kalır. Bir eleman gezinmeye yalnız `tabindex` taşıyorsa katılır (değeri
+"-1" hariç); `id` tek başına yeterli değildir, çünkü `id` zaten tıklama ve
+hit-test anlamı taşır.
+
+```html
+<div id="slot1" tabindex="0" data-nav-up="helmet">...</div>
+```
+
+```css
+#slot1:focus { border-color:#3b82f6; }
+```
+
+`HtmlView.MoveFocus(HtmlNavDirection)` yön metriğiyle (yarım düzlem + yanal
+sapma cezası + yanal örtüşme bonusu) bir sonraki elemanı seçer;
+`data-nav-up/right/down/left="hedefId"` tasarımcı override'ıdır ve metrikten
+önce gelir. `HtmlView.Activate()` odaklı elemanı gerçek tıklama yolundan
+etkinleştirir: anchor'lar `AnchorClicked`'a, diğerleri `ElementClicked`'a
+düşer. `HtmlFocusNavigator` bileşeni bunları EventSystem'in
+Move/Submit/Cancel olaylarına bağlar; nesneyi
+`EventSystem.SetSelectedGameObject` ile seçili yapmanız yeterlidir. v1 tek
+yüzey içindir; metin girişi ve yüzeyler arası gezinme kapsam dışıdır.
+
 vw/vh birimleri viewport değiştiğinde yeniden hesaplanır. Bu önemli, çünkü CSS
 viewport'u her zaman yazdığınız referans genişlik değildir: `DeviceScale` 0.5'te
 taban yaptığı için küçük ekranlar daha keskin değil, **CSS olarak daha geniş**
@@ -179,11 +204,11 @@ litehtml font yüklemez; siz vermelisiniz. İki yol:
 LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 ```
 
-143 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
+168 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
 rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
 Retained quad cache'in doğruluğu ayrı bir araçla kanıtlanıyor:
 `lhu_verify_quadcache`, cache'li ve cache'siz kayıtları kare kare
-karşılaştırır (2433 kare karşılaştırması). Bunun içinde bir
+karşılaştırır (2734 kare karşılaştırması). Bunun içinde bir
 **state-transition matrix** var: 12 mutasyon aksiyonunun (metin, stil,
 hover, scroll, resize, atlas büyümesi, invalidate, reload...) her sıralı
 çifti dört karede sınanıyor; her karede quad akışının bayt eşitliği,
@@ -243,7 +268,7 @@ kullanım yolu değil.
 Unity -batchmode -projectPath . -runTests -testPlatform EditMode -testResults results.xml
 ```
 
-45 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
+51 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
 **kullanmayın** (GPU testleri anlamsızlaşır).
 
 `HtmlRenderTests` gerçek bir `RenderTexture`'a çizip `ReadPixels` ile geri

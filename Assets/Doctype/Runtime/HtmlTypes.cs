@@ -180,6 +180,18 @@ namespace Doctype
     }
 
     /// <summary>
+    /// Mirrors <c>LhuNavDirection</c> in Native/src/lhu_api.h; the values are
+    /// part of the ABI. Document space, y down.
+    /// </summary>
+    public enum HtmlNavDirection
+    {
+        Up = 0,
+        Right = 1,
+        Down = 2,
+        Left = 3,
+    }
+
+    /// <summary>
     /// Mirrors <c>LhuDirtyMode</c> in Native/src/lhu_types.h; the values are
     /// part of the ABI.
     /// </summary>

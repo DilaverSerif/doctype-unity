@@ -155,6 +155,39 @@ namespace Doctype
         public static extern int lhu_scroll(IntPtr ctx, float dx, float dy, float x, float y);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int lhu_set_focus(IntPtr ctx, string selector);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int lhu_focus_move(IntPtr ctx, int direction);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int lhu_activate(IntPtr ctx, string selector);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int lhu_focused_id(IntPtr ctx,
+                                                 [MarshalAs(UnmanagedType.LPArray)] byte[] outId, int len);
+
+        /// <summary>Id of the focused element, "" when it has no id, null when
+        /// nothing is focused. Shares the hit-test buffer; single-threaded.</summary>
+        public static string FocusedId(IntPtr ctx)
+        {
+            byte[] buffer = s_elementIdBuffer;
+
+            if (lhu_focused_id(ctx, buffer, buffer.Length) == 0)
+            {
+                return null;
+            }
+
+            int end = Array.IndexOf(buffer, (byte)0);
+            if (end < 0)
+            {
+                end = buffer.Length;
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer, 0, end);
+        }
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern long lhu_quadcache_stat(IntPtr ctx, int which);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]

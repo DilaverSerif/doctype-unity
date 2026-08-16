@@ -177,6 +177,14 @@ struct LhuContext
         sublayout_candidate = el;
     }
 
+    // --- gamepad/keyboard focus ---------------------------------------------
+    //
+    // Weak on purpose: a reload or a structural mutation destroys elements,
+    // and focus must die with its element rather than keep a corpse alive.
+    // The pointer input path never touches this; focus is the gamepad's state,
+    // driven only through lhu_set_focus / lhu_focus_move.
+    std::weak_ptr<litehtml::element> focused;
+
     explicit LhuContext(const LhuHostCallbacks& host) :
         container(fonts, host),
         cache(container)
@@ -2353,6 +2361,354 @@ try
         }
     }
     return static_cast<int32_t>(scrolled.size());
+}
+LHU_API_CATCH(ctx, 0)
+
+} // extern "C"
+
+// --- gamepad/keyboard focus --------------------------------------------------
+//
+// Focus is deliberately NOT pointer emulation. Synthesizing mouse events would
+// entangle gamepad state with hover and :active, move on coordinates that may
+// be clipped away, and fight the real pointer for one shared position. Instead
+// focus is its own state: an element carries the `focus` pseudo-class, CSS
+// styles it with :focus, and activation runs the same on_click() bubbling a
+// real click ends in -- semantics without a cursor.
+//
+// Focusable is an OPT-IN contract: an element takes part only when it carries
+// a `tabindex` attribute (any value except "-1"). Ids alone must not make an
+// element navigable; they already mean click targets, drag targets and
+// hit-test pass-through, and a decorative wrapper with an id should never
+// steal the D-pad.
+
+namespace
+{
+bool focusable(const litehtml::element::ptr& el)
+{
+    const char* tab = el->get_attr("tabindex");
+    return tab && std::strcmp(tab, "-1") != 0;
+}
+
+// Laid-out border box of an element, or false when it has none (display:none,
+// not rendered yet, zero size). The same box the hit tester uses.
+bool focus_box(LhuContext* ctx, const litehtml::element::ptr& el, litehtml::position& out)
+{
+    bool found = false;
+    if(!element_border_box(ctx->doc->root_render(), el, out, found) || !found)
+    {
+        return false;
+    }
+    return static_cast<float>(out.width) > 0.f && static_cast<float>(out.height) > 0.f;
+}
+
+void collect_focusables(LhuContext* ctx, const litehtml::element::ptr& el,
+                        std::vector<std::pair<litehtml::element::ptr, litehtml::position>>& out)
+{
+    if(!el)
+    {
+        return;
+    }
+
+    litehtml::position box;
+    if(focusable(el) && focus_box(ctx, el, box))
+    {
+        out.emplace_back(el, box);
+    }
+
+    for(const auto& child : el->children())
+    {
+        collect_focusables(ctx, child, out);
+    }
+}
+
+// By id ATTRIBUTE, not by selector: data-nav-* values are author-written ids,
+// and routing them through the CSS selector parser would make `slot:3` a
+// syntax error instead of a name.
+litehtml::element::ptr find_by_id(const litehtml::element::ptr& el, const char* id)
+{
+    if(!el)
+    {
+        return nullptr;
+    }
+
+    const char* own = el->get_attr("id");
+    if(own && std::strcmp(own, id) == 0)
+    {
+        return el;
+    }
+
+    for(const auto& child : el->children())
+    {
+        if(auto hit = find_by_id(child, id))
+        {
+            return hit;
+        }
+    }
+    return nullptr;
+}
+
+// Moves the focus pseudo-class from the current element to `next` (which may
+// be null), through the same lifecycle the mouse events use: clear the stale
+// geometry flag, restyle under the hook's watch, then classify what the
+// restyle dirtied. A page with no :focus rule restyles nothing and reports 0,
+// which is correct -- the state still moved, and lhu_focused_id() says where.
+int32_t focus_apply(LhuContext* ctx, const litehtml::element::ptr& next)
+{
+    const auto prev = ctx->focused.lock();
+    if(prev == next)
+    {
+        return 0;
+    }
+
+    ctx->cache.take_geometry_changed();
+
+    static const litehtml::string_id kFocus = litehtml::_id("focus");
+
+    bool toggled = false;
+    if(prev && prev->set_pseudo_class(kFocus, false))
+    {
+        toggled = true;
+    }
+    if(next && next->set_pseudo_class(kFocus, true))
+    {
+        toggled = true;
+    }
+
+    ctx->focused = next;
+
+    bool changed = false;
+    if(toggled && ctx->doc->root())
+    {
+        changed = ctx->doc->root()->find_styles_changes(kIgnoreRedraw);
+    }
+
+    return classify_input_change(ctx, changed);
+}
+} // namespace
+
+extern "C" {
+
+int32_t lhu_set_focus(LhuContext* ctx, const char* selector)
+try
+{
+    if(!ctx || !ctx->doc)
+    {
+        return 0;
+    }
+
+    litehtml::element::ptr next;
+    if(selector && *selector)
+    {
+        const auto root = ctx->doc->root();
+        next            = root ? root->select_one(std::string(selector)) : nullptr;
+        if(!next)
+        {
+            ctx->last_error = std::string("set_focus: no element matched '") + selector + "'";
+            return 0;
+        }
+    }
+
+    ctx->last_error.clear();
+    return focus_apply(ctx, next);
+}
+LHU_API_CATCH(ctx, 0)
+
+int32_t lhu_focus_move(LhuContext* ctx, int32_t direction)
+try
+{
+    if(!ctx || !ctx->doc || direction < 0 || direction > 3)
+    {
+        return -1;
+    }
+
+    const auto root = ctx->doc->root();
+    if(!root)
+    {
+        return -1;
+    }
+
+    std::vector<std::pair<litehtml::element::ptr, litehtml::position>> candidates;
+    collect_focusables(ctx, root, candidates);
+    if(candidates.empty())
+    {
+        return -1;
+    }
+
+    const auto current = ctx->focused.lock();
+
+    litehtml::position cur_box;
+    const bool have_current = current && focus_box(ctx, current, cur_box);
+
+    // Nothing focused (or the focused element vanished): reading order picks
+    // the entry point, top-left first.
+    if(!have_current)
+    {
+        size_t best = 0;
+        for(size_t i = 1; i < candidates.size(); ++i)
+        {
+            const auto& a = candidates[i].second;
+            const auto& b = candidates[best].second;
+            if(a.y < b.y || (a.y == b.y && a.x < b.x))
+            {
+                best = i;
+            }
+        }
+        return focus_apply(ctx, candidates[best].first);
+    }
+
+    // The author's override outranks any metric. Automatic spatial navigation
+    // answers the 90% case; the last 10% is a designer saying "up from the
+    // hotbar is the helmet slot, whatever geometry thinks".
+    static const char* kNavAttr[4] = {"data-nav-up", "data-nav-right", "data-nav-down", "data-nav-left"};
+    if(const char* over = current->get_attr(kNavAttr[direction]))
+    {
+        const auto target = find_by_id(root, over);
+        litehtml::position ignored;
+        if(target && focusable(target) && focus_box(ctx, target, ignored))
+        {
+            return focus_apply(ctx, target);
+        }
+        // A dangling override falls through to the metric rather than
+        // stranding the user.
+    }
+
+    // Document space, y down. The main axis is the pressed direction; the
+    // lateral axis is the one the user did not ask to move along.
+    static const float kAxis[4][2] = {{0.f, -1.f}, {1.f, 0.f}, {0.f, 1.f}, {-1.f, 0.f}};
+    const float mx = kAxis[direction][0];
+    const float my = kAxis[direction][1];
+
+    const float fcx = static_cast<float>(cur_box.x) + static_cast<float>(cur_box.width) * 0.5f;
+    const float fcy = static_cast<float>(cur_box.y) + static_cast<float>(cur_box.height) * 0.5f;
+
+    litehtml::element::ptr best;
+    float best_score = 0.f;
+
+    for(const auto& cand : candidates)
+    {
+        if(cand.first == current)
+        {
+            continue;
+        }
+
+        const litehtml::position& box = cand.second;
+        const float ccx = static_cast<float>(box.x) + static_cast<float>(box.width) * 0.5f;
+        const float ccy = static_cast<float>(box.y) + static_cast<float>(box.height) * 0.5f;
+
+        const float dx = ccx - fcx;
+        const float dy = ccy - fcy;
+
+        // Half-plane: the candidate's center must lie beyond the current
+        // center in the pressed direction, or it is not "that way" at all.
+        const float main = dx * mx + dy * my;
+        if(main <= 0.5f)
+        {
+            continue;
+        }
+
+        // Lateral drift is punished, but much less when the two boxes overlap
+        // on the lateral axis -- a slightly offset element straight ahead
+        // beats a nearer one off to the side, which is what a thumb expects.
+        const float lateral = std::fabs(dx * my) + std::fabs(dy * mx);
+
+        float overlap;
+        if(my != 0.f) // vertical move: overlap on x
+        {
+            overlap = std::min(static_cast<float>(cur_box.x + cur_box.width),
+                               static_cast<float>(box.x + box.width)) -
+                      std::max(static_cast<float>(cur_box.x), static_cast<float>(box.x));
+        }
+        else // horizontal move: overlap on y
+        {
+            overlap = std::min(static_cast<float>(cur_box.y + cur_box.height),
+                               static_cast<float>(box.y + box.height)) -
+                      std::max(static_cast<float>(cur_box.y), static_cast<float>(box.y));
+        }
+
+        const float score = main + (overlap > 0.f ? 0.5f : 2.f) * lateral;
+
+        if(!best || score < best_score)
+        {
+            best       = cand.first;
+            best_score = score;
+        }
+    }
+
+    if(!best)
+    {
+        return -1; // edge of the page in that direction; focus stays put
+    }
+
+    return focus_apply(ctx, best);
+}
+LHU_API_CATCH(ctx, -1)
+
+int32_t lhu_activate(LhuContext* ctx, const char* selector)
+try
+{
+    if(!ctx || !ctx->doc)
+    {
+        return 0;
+    }
+
+    litehtml::element::ptr el;
+    if(selector && *selector)
+    {
+        const auto root = ctx->doc->root();
+        el              = root ? root->select_one(std::string(selector)) : nullptr;
+    }
+    else
+    {
+        el = ctx->focused.lock();
+    }
+
+    if(!el)
+    {
+        ctx->last_error = "activate: nothing focused and no selector matched";
+        return 0;
+    }
+
+    // The exact path a real click ends in: on_click() bubbles through
+    // on_element_click until something consumes it, and el_anchor's override
+    // fires on_anchor_click. No pointer state is touched -- hover, :active and
+    // the cursor stay whatever the real pointer made them.
+    el->on_click();
+
+    ctx->last_error.clear();
+    return 1;
+}
+LHU_API_CATCH(ctx, 0)
+
+int32_t lhu_focused_id(LhuContext* ctx, char* out_id, int32_t len)
+try
+{
+    if(out_id && len > 0)
+    {
+        out_id[0] = '\0';
+    }
+
+    if(!ctx)
+    {
+        return 0;
+    }
+
+    const auto el = ctx->focused.lock();
+    if(!el)
+    {
+        return 0;
+    }
+
+    if(const char* id = el->get_attr("id"))
+    {
+        if(out_id && len > 0)
+        {
+            const size_t n = std::min(std::strlen(id), static_cast<size_t>(len - 1));
+            std::memcpy(out_id, id, n);
+            out_id[n] = '\0';
+        }
+    }
+
+    return 1;
 }
 LHU_API_CATCH(ctx, 0)
 

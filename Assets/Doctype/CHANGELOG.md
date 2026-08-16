@@ -8,6 +8,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Gamepad/keyboard focus: elements opt in with `tabindex`, carry the `focus`
+  pseudo-class (style with `:focus`), and a spatial metric with
+  `data-nav-*` overrides moves focus directionally. `Activate` runs the real
+  click path (anchors and element clicks fire) without touching pointer
+  state. New API: `HtmlView.SetFocus/MoveFocus/Activate/FocusedId` and the
+  `HtmlFocusNavigator` component bridging Unity's EventSystem
+  Move/Submit/Cancel. v1 scope is a single view; text input and
+  cross-surface navigation are out.
+
 - Persistent mesh with ranged uploads: the frame now carries the stable quad
   prefix/suffix from the native diff, and the mesh builder keeps its buffers
   alive and rewrites only the changed span. On the benchmark phone a text

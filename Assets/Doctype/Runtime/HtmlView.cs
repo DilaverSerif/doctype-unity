@@ -932,5 +932,53 @@ namespace Doctype
 
             return consumed > 0;
         }
+
+        // --- gamepad/keyboard focus ------------------------------------------
+
+        /// <summary>
+        /// Focuses the first element the selector matches (style it with
+        /// :focus), or clears focus with null. Independent of the pointer:
+        /// hover and :active stay whatever the pointer made them.
+        /// </summary>
+        public void SetFocus(string selector)
+        {
+            if (_document != null)
+            {
+                ApplyInputDirty(_document.SetFocus(selector));
+            }
+        }
+
+        /// <summary>
+        /// Moves focus in a direction across the document's tabindex-carrying
+        /// elements: the author's data-nav-* override first, then the spatial
+        /// metric. With nothing focused, enters at the top-left focusable.
+        /// </summary>
+        /// <returns>False when focus had nowhere to go and stayed put.</returns>
+        public bool MoveFocus(HtmlNavDirection direction)
+        {
+            if (_document == null)
+            {
+                return false;
+            }
+
+            bool moved = _document.MoveFocus(direction, out HtmlDirty dirty);
+            ApplyInputDirty(dirty);
+            return moved;
+        }
+
+        /// <summary>
+        /// Activates the focused element (or a selector's element): anchors
+        /// raise <see cref="AnchorClicked"/> exactly like a real click.
+        /// </summary>
+        public bool Activate(string selector = null)
+        {
+            return _document != null && _document.Activate(selector);
+        }
+
+        /// <summary>
+        /// Id of the focused element, "" when it has no id, null when nothing
+        /// is focused.
+        /// </summary>
+        public string FocusedId => _document?.FocusedId;
     }
 }

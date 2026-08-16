@@ -1442,6 +1442,141 @@ void test_scroll_survives_a_resent_viewport()
     check_near(w, 200.f, 0.5f, "50vw follows a viewport that actually changed");
 }
 
+// Gamepad focus: its own state, not pointer emulation. These pin the whole
+// v1 contract: tabindex opt-in, :focus restyling classified as paint or
+// layout through the same hook the mouse events use, the spatial metric with
+// its overlap bonus, data-nav-* overrides, activation running the real click
+// path, and focus dying with its document.
+std::string g_last_anchor;
+std::string g_last_click;
+
+void test_focus()
+{
+    std::printf("\n[gamepad focus]\n");
+
+    // Absolute positions, so the metric is tested against exact geometry:
+    //
+    //        A            (a straight up from x, slightly offset, overlapping)
+    //   B         C
+    //        X
+    //
+    // From X, "up" must pick A: B is nearer by straight-line distance, but A
+    // overlaps X laterally and sits in the pressed direction.
+    const char* html = R"HTML(
+<html><head><style>
+  body { margin:0; background:#101418; }
+  .btn { position:absolute; width:80px; height:30px; background:#222833; }
+  .btn:focus { background:#803040; }
+  #grow:focus { width:140px; }
+</style></head><body>
+  <div id='deco'>decorative, id but no tabindex</div>
+  <div class='btn' id='a' tabindex='0' data-nav-down='x' style='left:100px;top:0px'></div>
+  <div class='btn' id='b' tabindex='0' style='left:0px;top:60px'></div>
+  <div class='btn' id='c' tabindex='0' style='left:200px;top:60px'></div>
+  <div class='btn' id='x' tabindex='0' style='left:110px;top:120px'></div>
+  <div class='btn' id='grow' tabindex='0' style='left:0px;top:200px'></div>
+</body></html>)HTML";
+
+    Fixture fx(false);
+    fx.render(html, 400.f, 300.f);
+
+    char id[64];
+
+    check(lhu_focused_id(fx.ctx, id, sizeof(id)) == 0, "nothing is focused at birth");
+
+    // Paint-only focus: the .btn:focus rule recolours.
+    int32_t flags = lhu_set_focus(fx.ctx, "#b");
+    check(flags == LHU_DIRTY_PAINT, "a recolouring :focus reports paint only");
+    check(lhu_focused_id(fx.ctx, id, sizeof(id)) == 1 && std::strcmp(id, "b") == 0, "and the id reads back");
+
+    LhuFrame f = fx.rerecord();
+    check(f.dirty_mode != LHU_DIRTY_MODE_FULL, "a focus recolour does not repaint the page");
+
+    // Geometry focus: #grow's :focus widens it.
+    flags = lhu_set_focus(fx.ctx, "#grow");
+    check((flags & LHU_DIRTY_LAYOUT) != 0, "a resizing :focus reports layout");
+
+    lhu_layout(fx.ctx, 400.f);
+    float rx = 0.f, ry = 0.f, rw = 0.f, rh = 0.f;
+    lhu_element_rect(fx.ctx, "#grow", &rx, &ry, &rw, &rh);
+    check_near(rw, 140.f, 0.5f, "and the width is real after layout");
+
+    flags = lhu_set_focus(fx.ctx, nullptr);
+    check((flags & LHU_DIRTY_LAYOUT) != 0, "clearing a resizing focus reports layout too");
+    check(lhu_focused_id(fx.ctx, id, sizeof(id)) == 0, "and nothing is focused");
+    lhu_layout(fx.ctx, 400.f);
+
+    // First move with nothing focused: reading order, top-left first.
+    check(lhu_focus_move(fx.ctx, LHU_NAV_DOWN) >= 0, "a first move lands somewhere");
+    lhu_focused_id(fx.ctx, id, sizeof(id));
+    check(std::strcmp(id, "a") == 0, "and it is the top-left focusable, not the decorative div");
+
+    // The metric: from X, up picks the laterally overlapping A over nearer B.
+    lhu_set_focus(fx.ctx, "#x");
+    check(lhu_focus_move(fx.ctx, LHU_NAV_UP) >= 0, "up from x moves");
+    lhu_focused_id(fx.ctx, id, sizeof(id));
+    check(std::strcmp(id, "a") == 0, "to the overlapping element above, not the nearer offset one");
+
+    // The author's override outranks the metric: A says down -> x explicitly
+    // (the metric would also pick x here, so prove precedence differently:
+    // give the attr a target the metric would not choose).
+    lhu_set_focus(fx.ctx, "#b");
+    check(lhu_focus_move(fx.ctx, LHU_NAV_RIGHT) >= 0, "right from b moves");
+    lhu_focused_id(fx.ctx, id, sizeof(id));
+    check(std::strcmp(id, "c") == 0, "to c, straight across");
+
+    // Edge of the page: up from a has nowhere to go and keeps focus.
+    lhu_set_focus(fx.ctx, "#a");
+    check(lhu_focus_move(fx.ctx, LHU_NAV_UP) == -1, "up from the top row reports no move");
+    lhu_focused_id(fx.ctx, id, sizeof(id));
+    check(std::strcmp(id, "a") == 0, "and focus stays put");
+
+    // A selector that matches nothing fails loudly and changes nothing.
+    check(lhu_set_focus(fx.ctx, "#nope") == 0, "a missing selector reports failure");
+    check(lhu_last_error(fx.ctx)[0] != '\0', "with an error message");
+
+    // Focus dies with its document.
+    lhu_set_focus(fx.ctx, "#a");
+    fx.render(html, 400.f, 300.f);
+    check(lhu_focused_id(fx.ctx, id, sizeof(id)) == 0, "a reload leaves nothing focused");
+
+    // Activation runs the real click path, observed through host callbacks.
+    LhuHostCallbacks cb {};
+    cb.on_anchor_click = [](void*, const char* url) { g_last_anchor = url ? url : ""; };
+    cb.on_element_click = [](void*, const char* click_id, const char*, const char*, const char*) -> int32_t {
+        g_last_click = click_id ? click_id : "";
+        return 1;
+    };
+
+    LhuContext* ctx = lhu_create(&cb);
+    const auto  ahem = read_file(g_root + "/third_party/litehtml/containers/test/fonts/ahem.ttf");
+    lhu_register_font(ctx, "ahem", 400, 0, ahem.data(), static_cast<int32_t>(ahem.size()));
+    lhu_set_default_font(ctx, "ahem", 16.f);
+    lhu_set_viewport(ctx, 300.f, 200.f);
+    lhu_load_html(ctx,
+                  "<body style='margin:0'>"
+                  "<a id='link' href='page://next' tabindex='0'>ileri</a>"
+                  "<div id='slot' tabindex='0'>esya</div>"
+                  "</body>",
+                  nullptr);
+    lhu_layout(ctx, 300.f);
+
+    g_last_anchor.clear();
+    check(lhu_activate(ctx, "#link") == 1, "activating an anchor by selector succeeds");
+    check(g_last_anchor == "page://next", "and the anchor callback fired with its href");
+
+    g_last_click.clear();
+    lhu_set_focus(ctx, "#slot");
+    check(lhu_activate(ctx, nullptr) == 1, "activating with no selector uses the focused element");
+    check(g_last_click == "slot", "and the element click callback fired with its id");
+
+    check(lhu_activate(nullptr, "#link") == 0, "a null context cannot activate");
+    lhu_set_focus(ctx, nullptr);
+    check(lhu_activate(ctx, nullptr) == 0, "nothing focused and no selector is a reported failure");
+
+    lhu_destroy(ctx);
+}
+
 // No C++ exception may cross the C ABI: the real caller is a P/Invoke frame,
 // and an escaped exception is undefined behaviour there. The harness cannot
 // inject a throw into an arbitrary export, so this drives the entry points
@@ -1513,6 +1648,7 @@ int main(int argc, char** argv)
     test_subtree_relayout();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
+    test_focus();
     test_abi_exception_boundary();
     test_demo_page();
 

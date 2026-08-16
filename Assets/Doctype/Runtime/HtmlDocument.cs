@@ -492,6 +492,66 @@ namespace Doctype
             return IsValid ? HtmlNative.lhu_scroll(_ctx, delta.x, delta.y, documentPoint.x, documentPoint.y) : 0;
         }
 
+        // --- gamepad/keyboard focus ------------------------------------------
+        //
+        // Focus is its own state, not pointer emulation: the element carries
+        // the `focus` pseudo-class (style it with :focus in CSS), navigation
+        // considers only elements with a tabindex attribute, and activation
+        // runs the same click path a pointer takes without touching hover or
+        // the cursor.
+
+        /// <summary>
+        /// Focuses the first element the selector matches, or clears focus
+        /// when the selector is null/empty. The return is what the restyle
+        /// dirtied; a page with no :focus rule legitimately returns None.
+        /// </summary>
+        public HtmlDirty SetFocus(string selector)
+        {
+            return IsValid ? (HtmlDirty)HtmlNative.lhu_set_focus(_ctx, selector) : HtmlDirty.None;
+        }
+
+        /// <summary>
+        /// Moves focus in a direction: the author's data-nav-* override first,
+        /// then the spatial metric over tabindex-carrying elements. With
+        /// nothing focused, picks the top-left focusable.
+        /// </summary>
+        /// <returns>False when there was nothing to move to; focus stays.</returns>
+        public bool MoveFocus(HtmlNavDirection direction, out HtmlDirty dirty)
+        {
+            dirty = HtmlDirty.None;
+
+            if (!IsValid)
+            {
+                return false;
+            }
+
+            int result = HtmlNative.lhu_focus_move(_ctx, (int)direction);
+            if (result < 0)
+            {
+                return false;
+            }
+
+            dirty = (HtmlDirty)result;
+            return true;
+        }
+
+        /// <summary>
+        /// Activates the selector's element, or the focused one when the
+        /// selector is null: anchors raise <see cref="AnchorClicked"/> exactly
+        /// like a real click, other elements bubble through the click event.
+        /// </summary>
+        public bool Activate(string selector = null)
+        {
+            return IsValid && HtmlNative.lhu_activate(_ctx, selector) == 1;
+        }
+
+        /// <summary>
+        /// Id of the focused element, "" when it has no id, null when nothing
+        /// is focused. Focus dies with its element: after a reload this is
+        /// null again.
+        /// </summary>
+        public string FocusedId => IsValid ? HtmlNative.FocusedId(_ctx) : null;
+
         // --- native callbacks ------------------------------------------------
 
         private static HtmlDocument FromUserData(IntPtr userData)

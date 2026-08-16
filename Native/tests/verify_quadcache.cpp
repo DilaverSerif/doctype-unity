@@ -445,8 +445,12 @@ std::string page_matrix(int rows)
 }
 
 // Rows recolour on hover (paint only); the box grows on hover (geometry).
+// Focus mirrors both flavours so the focus action exercises a paint restyle
+// on the row and a geometry restyle on the box.
 const char* kMatrixCss = ".row:hover { background:#3a1020; border-color:#ff2255; color:#ffd0d8; }"
-                         "#box:hover { padding:12px; }";
+                         "#box:hover { padding:12px; }"
+                         ".row:focus { background:#103a2a; border-color:#22ff99; }"
+                         "#box:focus { padding:11px; }";
 
 // --- dirty-region oracle -----------------------------------------------------
 //
@@ -1332,6 +1336,7 @@ int main()
         bool alt_box    = false;
         bool hover_row  = false;
         bool hover_box  = false;
+        int  focus_state = 0;
         int  scroll_dir = 1;
 
         const std::string page = page_matrix(24);
@@ -1425,6 +1430,15 @@ int main()
                  lhu_quadcache_stat(p.off, LHU_QC_INVALIDATE);
                  lhu_quadcache_stat(p.on, LHU_QC_INVALIDATE);
              }},
+            {"focus cycle",
+             [&] {
+                 // Paint-flavoured focus, geometry-flavoured focus, cleared:
+                 // three states so consecutive applications keep transitioning.
+                 focus_state = (focus_state + 1) % 3;
+                 const char* sel = focus_state == 0 ? nullptr : focus_state == 1 ? "#r5" : "#box";
+                 lhu_set_focus(p.off, sel);
+                 lhu_set_focus(p.on, sel);
+             }},
             {"reload",
              [&] {
                  lhu_load_html(p.off, page.c_str(), kMatrixCss);
@@ -1470,6 +1484,7 @@ int main()
             alt_box    = false;
             hover_row  = false;
             hover_box  = false;
+            focus_state = 0;
             scroll_dir = 1;
 
             both_load(p, page, kMatrixCss, cur_w, H);

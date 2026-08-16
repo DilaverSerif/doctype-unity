@@ -239,6 +239,58 @@ LHU_API int32_t lhu_mouse_leave(LhuContext* ctx);
 // should scroll the view itself.
 LHU_API int32_t lhu_scroll(LhuContext* ctx, float dx, float dy, float x, float y);
 
+// --- gamepad/keyboard focus -------------------------------------------------
+//
+// Focus is its own state, not pointer emulation: an element carries the
+// `focus` pseudo-class (style it with :focus), and activation runs the same
+// on_click() bubbling a real click ends in. Hover, :active and the cursor
+// stay whatever the real pointer made them.
+//
+// Only elements carrying a `tabindex` attribute (any value except "-1") take
+// part in navigation. An id alone does not make an element navigable; ids
+// already mean click targets and hit-testing, and a decorative wrapper with
+// an id must not steal the D-pad.
+//
+// An element may override the automatic choice for each direction with
+// data-nav-up / data-nav-right / data-nav-down / data-nav-left, whose value
+// is the target's id attribute (not a selector).
+
+typedef enum LhuNavDirection
+{
+    LHU_NAV_UP    = 0,
+    LHU_NAV_RIGHT = 1,
+    LHU_NAV_DOWN  = 2,
+    LHU_NAV_LEFT  = 3,
+} LhuNavDirection;
+
+// Focuses the first element the selector matches, or clears focus when the
+// selector is NULL or empty. Returns LhuDirtyFlags; zero can mean "no :focus
+// rule restyled anything", which is still a successful move -- ask
+// lhu_focused_id() for the state. Fails (0 + lhu_last_error) when a non-empty
+// selector matches nothing.
+LHU_API int32_t lhu_set_focus(LhuContext* ctx, const char* selector);
+
+// Moves focus in a direction. With nothing focused, picks the top-left
+// focusable (reading order). Prefers the author's data-nav-* override, then a
+// spatial metric: candidates whose center lies beyond the current center in
+// the pressed direction, scored by main-axis distance plus a lateral penalty
+// that shrinks when the boxes overlap laterally -- an offset element straight
+// ahead beats a nearer one off to the side. Returns LhuDirtyFlags on a move,
+// or -1 when there is nothing to move to (focus keeps its place).
+LHU_API int32_t lhu_focus_move(LhuContext* ctx, int32_t direction);
+
+// Activates the selector's element, or the focused one when the selector is
+// NULL/empty: the same click path a pointer takes, so anchors fire
+// on_anchor_click and elements bubble through on_element_click. Returns 1
+// when something was activated.
+LHU_API int32_t lhu_activate(LhuContext* ctx, const char* selector);
+
+// Writes the focused element's id attribute (empty string when it has none)
+// and returns 1, or returns 0 with nothing focused. Focus dies with its
+// element: a reload or a structural mutation that destroys the element
+// reports 0 here afterwards.
+LHU_API int32_t lhu_focused_id(LhuContext* ctx, char* out_id, int32_t len);
+
 // --- diagnostics -----------------------------------------------------------
 
 // --- experiment: incremental layout ----------------------------------------
