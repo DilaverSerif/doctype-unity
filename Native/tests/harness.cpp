@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional> // libstdc++ does not include it transitively; GCC needs it
 #include <string>
 #include <vector>
 

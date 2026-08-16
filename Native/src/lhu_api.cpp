@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <functional> // libstdc++ does not include it transitively; GCC needs it
 #include <memory>
 #include <string>
 #include <vector>
