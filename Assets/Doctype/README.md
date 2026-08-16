@@ -182,8 +182,12 @@ LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 140 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
 rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
 Retained quad cache'in doğruluğu ayrı bir araçla kanıtlanıyor:
-`lhu_verify_quadcache`, mutasyon/scroll/hover senaryolarında cache'li ve
-cache'siz kayıtları kare kare karşılaştırır (693 kare karşılaştırması).
+`lhu_verify_quadcache`, cache'li ve cache'siz kayıtları kare kare
+karşılaştırır (1857 kare karşılaştırması). Bunun içinde bir
+**state-transition matrix** var: 12 mutasyon aksiyonunun (metin, stil,
+hover, scroll, resize, atlas büyümesi, invalidate, reload...) her sıralı
+çifti dört karede sınanıyor; her karede hem quad akışının bayt eşitliği hem
+de raporlanan dirty bölgesinin değişikliği gerçekten kapsadığı doğrulanıyor.
 
 Metin ölçüleri [Ahem](https://github.com/litehtml/litehtml/tree/master/containers/test/fonts)
 fontuyla test ediliyor: her glyph tam 1em genişliğinde dolu bir kare olduğu için

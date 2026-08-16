@@ -28,10 +28,10 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Harness (140 checks, reference rasterizer included)
+      - name: Harness (reference rasterizer included)
         run: LHU_ROOT="$PWD/Native" ./build/lhu_harness build
 
-      - name: Quad cache verification (693 frame comparisons)
+      - name: Quad cache verification + state matrix
         run: ./build/lhu_verify_quadcache
 
   macos:
@@ -44,10 +44,10 @@ jobs:
       - name: Build bundle + test binaries
         run: Native/build_macos.sh harness
 
-      - name: Harness (140 checks)
+      - name: Harness
         run: LHU_ROOT="$PWD/Native" Native/build/macos/bin/lhu_harness Native/build/macos
 
-      - name: Quad cache verification (693 frame comparisons)
+      - name: Quad cache verification + state matrix
         run: Native/build/macos/bin/lhu_verify_quadcache
 
   android:

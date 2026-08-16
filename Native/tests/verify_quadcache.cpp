@@ -49,11 +49,13 @@
 
 #include "lhu_api.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -415,6 +417,150 @@ std::string exotic_label(int step_index)
     return out;
 }
 
+// The matrix page: one element per mutation class, all live at once. A counter
+// for same-shape text, a label for structural text and for exotic glyphs, a
+// box that both a style edit and a geometry-changing :hover can restyle,
+// hoverable rows inside a scrollable viewport, and a tail the pointer can
+// retreat to so "hover off" is a real place.
+std::string page_matrix(int rows)
+{
+    std::string out =
+        "<body style='margin:0;font-family:sans-serif;color:#e6e9f0;background:#0f1117'>"
+        "<div style='margin:10px'>"
+        "<div id='num' style='font-size:20px'>Skor 100</div>"
+        "<div id='mark' style='font-size:15px;margin-top:4px'>Esya baslangic</div>"
+        "<div id='box' style='margin-top:6px;padding:6px;border-radius:8px;background:#233056'>Kutu</div>"
+        "<div id='vp' style='height:220px;overflow:auto;margin-top:8px;border:1px solid #334455'>";
+    for(int i = 0; i < rows; ++i)
+    {
+        out += "<div class='row'" + std::string(i == 4 ? " id='r5'" : "") +
+               " style='padding:7px 9px;margin-bottom:5px;border-radius:6px;background:#171c2b;"
+               "border:1px solid #232b45'><span style='font-size:14px'>Satir " +
+               std::to_string(i + 1) + "</span></div>";
+    }
+    out += "</div>"
+           "<div id='tail' style='margin-top:8px;color:#8e97b3'>alt bolge</div>"
+           "</div></body>";
+    return out;
+}
+
+// Rows recolour on hover (paint only); the box grows on hover (geometry).
+const char* kMatrixCss = ".row:hover { background:#3a1020; border-color:#ff2255; color:#ffd0d8; }"
+                         "#box:hover { padding:12px; }";
+
+// --- dirty-region oracle -----------------------------------------------------
+//
+// The on/off memcmp proves the quad STREAM is right; it says nothing about the
+// dirty REGION the ON context reports next to it, and a wrong region is the
+// same bug class one layer up: a host that repaints only the reported rect
+// leaves a stale pixel wherever the report undershot. So the matrix recomputes
+// the change independently -- its own prefix/suffix trim against its own copy
+// of the previous ON frame -- and demands every painted pixel of every changed
+// quad, removed and added alike, lie inside the reported rect(s).
+
+// Axis-aligned pixels a quad can touch: rect intersected with its clip. Same
+// convention as the engine: clip_w < 0 means no clip, and a PRESENT zero-area
+// clip means the quad paints nothing at all.
+bool matrix_painted_box(const LhuQuad& q, float& x0, float& y0, float& x1, float& y1)
+{
+    x0 = q.x;
+    y0 = q.y;
+    x1 = q.x + q.w;
+    y1 = q.y + q.h;
+
+    if(q.clip_w >= 0.f)
+    {
+        x0 = std::max(x0, q.clip_x);
+        y0 = std::max(y0, q.clip_y);
+        x1 = std::min(x1, q.clip_x + q.clip_w);
+        y1 = std::min(y1, q.clip_y + q.clip_h);
+    }
+
+    return x1 > x0 && y1 > y0;
+}
+
+// FULL promises nothing and SCROLL is proven pixel by pixel in the harness, so
+// both pass here; NONE must mean byte-identical, and RECT must cover the
+// symmetric difference of the two frames.
+bool dirty_covers_changes(const std::vector<LhuQuad>& prev, const LhuFrame& cur, std::string& why)
+{
+    if(cur.dirty_mode == LHU_DIRTY_MODE_FULL || cur.dirty_mode == LHU_DIRTY_MODE_SCROLL)
+    {
+        return true;
+    }
+
+    const size_t n_prev = prev.size();
+    const size_t n_cur  = static_cast<size_t>(cur.quad_count);
+
+    if(cur.dirty_mode == LHU_DIRTY_MODE_NONE)
+    {
+        if(n_prev != n_cur ||
+           (n_cur && std::memcmp(prev.data(), cur.quads, n_cur * sizeof(LhuQuad)) != 0))
+        {
+            why = "mode NONE but the quads differ from the previous frame";
+            return false;
+        }
+        return true;
+    }
+
+    // RECT. Trim the common prefix and suffix the same way the engine's diff
+    // does -- independently, against our own retained copy.
+    const size_t max_common = std::min(n_prev, n_cur);
+
+    size_t prefix = 0;
+    while(prefix < max_common && std::memcmp(&prev[prefix], &cur.quads[prefix], sizeof(LhuQuad)) == 0)
+    {
+        ++prefix;
+    }
+
+    size_t suffix = 0;
+    while(suffix < max_common - prefix &&
+          std::memcmp(&prev[n_prev - 1 - suffix], &cur.quads[n_cur - 1 - suffix], sizeof(LhuQuad)) == 0)
+    {
+        ++suffix;
+    }
+
+    const auto inside = [](float x0, float y0, float x1, float y1, float rx, float ry, float rw, float rh) {
+        const float e = 0.01f;
+        return x0 >= rx - e && y0 >= ry - e && x1 <= rx + rw + e && y1 <= ry + rh + e;
+    };
+
+    const auto covered = [&](const LhuQuad& q) {
+        float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+        if(!matrix_painted_box(q, x0, y0, x1, y1))
+        {
+            return true; // clipped away entirely; it repaints nothing
+        }
+        if(inside(x0, y0, x1, y1, cur.dirty_x, cur.dirty_y, cur.dirty_w, cur.dirty_h))
+        {
+            return true;
+        }
+        return cur.dirty2_w > 0.f && cur.dirty2_h > 0.f &&
+               inside(x0, y0, x1, y1, cur.dirty2_x, cur.dirty2_y, cur.dirty2_w, cur.dirty2_h);
+    };
+
+    // Both middles matter: the new quads must be painted inside the rect, and
+    // the OLD quads' pixels must be cleared by it, so both are contained.
+    for(size_t i = prefix; i < n_prev - suffix; ++i)
+    {
+        if(!covered(prev[i]))
+        {
+            why = "removed quad " + std::to_string(i) + " paints outside the reported rect";
+            return false;
+        }
+    }
+    for(size_t i = prefix; i < n_cur - suffix; ++i)
+    {
+        if(!covered(cur.quads[i]))
+        {
+            why = "new quad " + std::to_string(i) + " paints outside the reported rect";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // --- driving both contexts ---------------------------------------------------
 
 void both_load(Pair& p, const std::string& html, const char* user_css, float w, float h)
@@ -461,6 +607,18 @@ int both_scroll(Pair& p, float dy, float x, float y)
 {
     lhu_scroll(p.off, 0.f, dy, x, y);
     return lhu_scroll(p.on, 0.f, dy, x, y);
+}
+
+int both_set_style(Pair& p, const char* sel, const char* css)
+{
+    const int a = lhu_set_style(p.off, sel, css);
+    const int b = lhu_set_style(p.on, sel, css);
+    if(a != b)
+    {
+        ++g_failures;
+        std::printf("  [FAIL] lhu_set_style disagreed: off=%d on=%d\n", a, b);
+    }
+    return b;
 }
 
 LhuContext* make_context(bool cache_on, bool subtree_on, const std::vector<uint8_t>& regular,
@@ -1100,6 +1258,193 @@ int main()
         {
             ++g_failures;
             std::printf("  [FAIL] %-28s %-36s null ctx did not report -1\n", "host invalidate", "null-safe");
+        }
+    }
+
+    std::printf("\n=== 10. state-transition matrix ===\n");
+    {
+        // Every optimization in the engine is an entry in this list, expressed
+        // as the user-visible action that arms it. The matrix drives every
+        // ORDERED pair through four frames -- A alone, then B, then A and B in
+        // the same frame, then an idle frame (the one a stale cache gets wrong)
+        // -- and after every frame demands (a) the ON stream is byte-identical
+        // to the OFF baseline and (b) the dirty region the ON context reports
+        // actually covers what changed. The bugs this exists for do not crash;
+        // they leave one old pixel on screen. Three shipped this week before
+        // this section existed: E1 x E2 on a text change, the re-sent device
+        // scale, and the mid-record atlas grow.
+        const float H     = 640.f;
+        float       cur_w = 480.f;
+
+        int  tick       = 0;
+        int  exotic     = 64; // past the indexes earlier sections consumed
+        bool wide_mark  = false;
+        bool fat_box    = false;
+        bool alt_box    = false;
+        bool hover_row  = false;
+        bool hover_box  = false;
+        int  scroll_dir = 1;
+
+        const std::string page = page_matrix(24);
+
+        const auto elem_center = [&](const char* sel, float& x, float& y) {
+            float ex = 0.f, ey = 0.f, ew = 0.f, eh = 0.f;
+            if(!lhu_element_rect(p.on, sel, &ex, &ey, &ew, &eh))
+            {
+                return false;
+            }
+            x = ex + ew * 0.5f;
+            y = ey + eh * 0.5f;
+            return true;
+        };
+
+        struct Act
+        {
+            const char*           name;
+            std::function<void()> apply;
+        };
+
+        const std::vector<Act> acts = {
+            {"text tick",
+             [&] {
+                 char b[32];
+                 std::snprintf(b, sizeof(b), "Skor %d", 100 + ++tick);
+                 both_set_text(p, "#num", b);
+             }},
+            {"text reshape",
+             [&] {
+                 wide_mark = !wide_mark;
+                 both_set_text(p, "#mark",
+                               wide_mark ? "Esya cok daha uzun bir etiket oldu simdi" : "Esya baslangic");
+             }},
+            {"exotic glyphs",
+             [&] { both_set_text(p, "#mark", exotic_label(exotic++).c_str()); }},
+            {"style paint",
+             [&] {
+                 alt_box = !alt_box;
+                 both_set_style(p, "#box",
+                                alt_box ? "margin-top:6px;padding:6px;border-radius:8px;background:#6a2030"
+                                        : "margin-top:6px;padding:6px;border-radius:8px;background:#233056");
+             }},
+            {"style geometry",
+             [&] {
+                 fat_box = !fat_box;
+                 both_set_style(p, "#box",
+                                fat_box ? "margin-top:6px;padding:14px;border-radius:8px;background:#233056"
+                                        : "margin-top:6px;padding:6px;border-radius:8px;background:#233056");
+             }},
+            {"hover row (paint)",
+             [&] {
+                 hover_row = !hover_row;
+                 float x = 0.f, y = 0.f;
+                 if(elem_center(hover_row ? "#r5" : "#tail", x, y))
+                 {
+                     both_mouse_move(p, x, y);
+                 }
+             }},
+            {"hover box (geometry)",
+             [&] {
+                 hover_box = !hover_box;
+                 float x = 0.f, y = 0.f;
+                 if(elem_center(hover_box ? "#box" : "#tail", x, y))
+                 {
+                     both_mouse_move(p, x, y);
+                 }
+             }},
+            {"scroll",
+             [&] {
+                 float x = 0.f, y = 0.f;
+                 if(elem_center("#vp", x, y))
+                 {
+                     both_scroll(p, 24.f * static_cast<float>(scroll_dir), x, y);
+                     scroll_dir = -scroll_dir;
+                 }
+             }},
+            {"viewport resize",
+             [&] {
+                 cur_w = cur_w == 480.f ? 520.f : 480.f;
+                 lhu_set_viewport(p.off, cur_w, H);
+                 lhu_set_viewport(p.on, cur_w, H);
+             }},
+            {"device scale re-send",
+             [&] {
+                 lhu_set_device_scale(p.off, 1.f);
+                 lhu_set_device_scale(p.on, 1.f);
+             }},
+            {"host invalidate",
+             [&] {
+                 lhu_quadcache_stat(p.off, LHU_QC_INVALIDATE);
+                 lhu_quadcache_stat(p.on, LHU_QC_INVALIDATE);
+             }},
+            {"reload",
+             [&] {
+                 lhu_load_html(p.off, page.c_str(), kMatrixCss);
+                 lhu_load_html(p.on, page.c_str(), kMatrixCss);
+             }},
+        };
+
+        std::vector<LhuQuad> prev_on;
+        const auto           snapshot = [&] {
+            prev_on.assign(p.f_on.quads, p.f_on.quads + p.f_on.quad_count);
+        };
+
+        const auto verify_frame = [&](const char* pair_name, const char* phase) {
+            both_layout(p, cur_w);
+            record_and_compare(p, pair_name, phase);
+
+            ++g_checks;
+            std::string why;
+            if(!dirty_covers_changes(prev_on, p.f_on, why))
+            {
+                fail(pair_name, phase, "dirty region: " + why);
+            }
+            snapshot();
+        };
+
+        for(size_t a = 0; a < acts.size(); ++a)
+        {
+            // A fresh page and a known toggle state per row, so a failure names
+            // its pair instead of inheriting a previous pair's leftovers. The
+            // atlas deliberately persists: a long-lived atlas is the realistic
+            // substrate, and `exotic` never resets for the same reason.
+            cur_w      = 480.f;
+            tick       = 0;
+            wide_mark  = false;
+            fat_box    = false;
+            alt_box    = false;
+            hover_row  = false;
+            hover_box  = false;
+            scroll_dir = 1;
+
+            both_load(p, page, kMatrixCss, cur_w, H);
+            record_and_compare(p, acts[a].name, "matrix row baseline");
+            snapshot();
+
+            const int before = g_failures;
+
+            for(size_t b = 0; b < acts.size(); ++b)
+            {
+                char pair_name[96];
+                std::snprintf(pair_name, sizeof(pair_name), "%s + %s", acts[a].name, acts[b].name);
+
+                acts[a].apply();
+                verify_frame(pair_name, "after A");
+
+                acts[b].apply();
+                verify_frame(pair_name, "then B");
+
+                acts[a].apply();
+                acts[b].apply();
+                verify_frame(pair_name, "A and B in one frame");
+
+                verify_frame(pair_name, "the idle frame after");
+            }
+
+            if(g_failures == before)
+            {
+                std::printf("  [PASS] %-28s x %d partners, 4 frames each, stream + dirty region ok\n",
+                            acts[a].name, static_cast<int>(acts.size()));
+            }
         }
     }
 
