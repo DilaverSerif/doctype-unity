@@ -95,11 +95,11 @@ atlas and uploaded once.
 Unity 6000.0+, Package Manager, "Add package from git URL":
 
 ```
-https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.1.0
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.2.0
 ```
 
 Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS
-ship inside the package, so there is nothing to compile. Drop the `#v0.1.0`
+ship inside the package, so there is nothing to compile. Drop the `#v0.2.0`
 suffix to track master instead of a release.
 
 ### From a clone (for development)

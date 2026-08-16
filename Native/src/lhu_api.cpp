@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#define LHU_VERSION_STRING "0.1.0"
+#define LHU_VERSION_STRING "0.2.0"
 
 // EXPERIMENT E2: the retained display list is switched on and off at runtime,
 // not at build time. Adding a pass to the benchmark has already been shown to
