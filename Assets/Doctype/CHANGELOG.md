@@ -19,6 +19,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The benchmark's vertex columns are now measured at the buffer instead of
   derived from the quad count.
 
+### Fixed
+
+- HtmlResources no longer accepts an image atlas that Unity's PackTextures
+  silently downscaled to fit Max Atlas Size (measured really happening: a
+  16x16 icon came back 12x12). Layout draws images at their intrinsic size,
+  so the shrunken texels rendered blurry with no error anywhere. Packing now
+  goes through a scratch texture, verifies every packed rect is full
+  resolution, refuses loudly otherwise, and leaves the previous atlas and
+  its UVs untouched on refusal.
+
 ## [0.1.0] - 2026-08-16
 
 First packaged release. Working and measured on device (Xiaomi 22101316I,

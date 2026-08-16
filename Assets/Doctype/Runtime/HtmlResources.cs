@@ -49,11 +49,27 @@ namespace Doctype
         private Texture2D _atlas;
         private int _version;
 
+        // Source count the last refused pack saw. BeginLoadImage retries the
+        // pack for every still-unpacked url, so without this a refusal would
+        // re-run and re-log once per record until the end of time.
+        private int _refusedAtSourceCount = -1;
+
         /// <inheritdoc />
         public int Version => _version;
 
         /// <inheritdoc />
         public Texture ImageAtlas => _atlas;
+
+        /// <summary>
+        /// Upper bound for the packed atlas, exposed so tests and runtime code
+        /// can configure it. Packing is refused loudly when the sources do not
+        /// fit at full resolution; see <see cref="Repack"/>.
+        /// </summary>
+        public int MaxAtlasSize
+        {
+            get => _maxAtlasSize;
+            set => _maxAtlasSize = value;
+        }
 
         private void Awake()
         {
@@ -68,11 +84,29 @@ namespace Doctype
 
         private void OnDestroy()
         {
-            if (_atlas != null)
+            DestroyTexture(_atlas);
+            _atlas = null;
+        }
+
+        private static void DestroyTexture(Texture2D texture)
+        {
+            if (texture == null)
             {
-                Destroy(_atlas);
-                _atlas = null;
+                return;
             }
+
+#if UNITY_EDITOR
+            if (Application.isPlaying)
+            {
+                Destroy(texture);
+            }
+            else
+            {
+                DestroyImmediate(texture);
+            }
+#else
+            Destroy(texture);
+#endif
         }
 
         /// <summary>
@@ -88,6 +122,10 @@ namespace Doctype
 
             _sources[name] = texture;
             _missing.Remove(name);
+
+            // A new or replaced source changes what a pack would produce, so a
+            // standing refusal no longer describes the world.
+            _refusedAtSourceCount = -1;
 
             // Already packed under this name: the atlas has to be rebuilt or the
             // old picture would keep being drawn.
@@ -209,18 +247,56 @@ namespace Doctype
                 return;
             }
 
-            if (_atlas == null)
+            // A refused pack stays refused until the sources change; retrying
+            // with the same inputs would only produce the same error, once per
+            // record, forever.
+            if (_sources.Count == _refusedAtSourceCount)
             {
-                _atlas = new Texture2D(1, 1, TextureFormat.RGBA32, false) { name = "Doctype image atlas" };
-            }
-
-            Rect[] rects = _atlas.PackTextures(textures.ToArray(), _padding, _maxAtlasSize, false);
-            if (rects == null)
-            {
-                Debug.LogError($"[Doctype] could not pack {textures.Count} image(s) into a {_maxAtlasSize}px " +
-                               "atlas; raise the limit or use smaller textures.", this);
                 return;
             }
+
+            // Packed into a fresh texture rather than the live atlas:
+            // PackTextures mutates its target in place, so a pack that has to
+            // be refused would otherwise already have scrambled the texels
+            // every existing UV points into. The old atlas stays authoritative
+            // until the new one is proven whole.
+            var packed = new Texture2D(1, 1, TextureFormat.RGBA32, false) { name = "Doctype image atlas" };
+
+            Rect[] rects = packed.PackTextures(textures.ToArray(), _padding, _maxAtlasSize, false);
+            if (rects == null)
+            {
+                DestroyTexture(packed);
+                _refusedAtSourceCount = _sources.Count;
+                Debug.LogError($"[Doctype] could not pack {textures.Count} image(s) into a {_maxAtlasSize}px " +
+                               "atlas; raise Max Atlas Size or use smaller textures.", this);
+                return;
+            }
+
+            // PackTextures does not promise to fail when the sources exceed the
+            // maximum: its documentation allows it to SCALE THEM DOWN to fit.
+            // Layout draws every image at its intrinsic source size, so a
+            // silently downscaled texel block renders blurry with no error
+            // anywhere. Refuse the pack instead, by comparing every returned
+            // rect's pixel size against its source.
+            for (int i = 0; i < textures.Count; i++)
+            {
+                float packedW = rects[i].width * packed.width;
+                float packedH = rects[i].height * packed.height;
+
+                if (packedW < textures[i].width - 0.5f || packedH < textures[i].height - 0.5f)
+                {
+                    Debug.LogError($"[Doctype] packing {textures.Count} image(s) into a {_maxAtlasSize}px atlas " +
+                                   $"would shrink '{names[i]}' from {textures[i].width}x{textures[i].height} to " +
+                                   $"{Mathf.RoundToInt(packedW)}x{Mathf.RoundToInt(packedH)} and draw it blurry; " +
+                                   "raise Max Atlas Size or use smaller textures.", this);
+                    DestroyTexture(packed);
+                    _refusedAtSourceCount = _sources.Count;
+                    return;
+                }
+            }
+
+            DestroyTexture(_atlas);
+            _atlas = packed;
 
             _uvs.Clear();
             for (int i = 0; i < names.Count; i++)

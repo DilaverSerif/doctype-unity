@@ -1,7 +1,9 @@
+using System.Text.RegularExpressions;
 using Doctype;
 using NUnit.Framework;
 using Unity.Collections;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace Doctype.Tests
 {
@@ -150,6 +152,82 @@ namespace Doctype.Tests
             int before = _resources.Version;
             _resources.BeginLoadImage("gold");
             Assert.Greater(_resources.Version, before);
+        }
+
+        static Texture2D SolidTexture(int size, Color32 color)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            var pixels = new Color32[size * size];
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                pixels[i] = color;
+            }
+            tex.SetPixels32(pixels);
+            tex.Apply();
+            return tex;
+        }
+
+        [Test]
+        public void PackThatWouldShrinkAnImageIsRefusedLoudly()
+        {
+            // PackTextures is documented to SCALE SOURCES DOWN when they exceed
+            // the maximum atlas size, not to fail. Layout keeps drawing at the
+            // intrinsic size, so accepting that pack would render the icon
+            // blurry with no error anywhere. The provider must refuse instead.
+            Texture2D big = SolidTexture(64, new Color32(200, 40, 40, 255));
+            try
+            {
+                _resources.MaxAtlasSize = 64;
+                _resources.Register("big1", big);
+                _resources.Register("big2", big); // two 64px images cannot share a 64px atlas
+
+                int versionBefore = _resources.Version;
+
+                LogAssert.Expect(LogType.Error, new Regex("shrink|could not pack"));
+                _resources.BeginLoadImage("big1");
+
+                Assert.IsFalse(_resources.TryGetImageUv("big1", out _),
+                               "a refused pack must not hand out UVs into a shrunken atlas");
+                Assert.AreEqual(versionBefore, _resources.Version,
+                                "nothing became available, so the version must not move");
+            }
+            finally
+            {
+                Object.DestroyImmediate(big);
+            }
+        }
+
+        [Test]
+        public void RefusedPackKeepsTheOldAtlasIntact()
+        {
+            // "gold" is packed and proven on screen first; a later pack that
+            // has to be refused must leave that working atlas untouched rather
+            // than scrambling the texels its UVs point into.
+            _resources.BeginLoadImage("gold");
+            Assert.IsTrue(_resources.TryGetImageUv("gold", out Rect uvBefore));
+            Texture atlasBefore = _resources.ImageAtlas;
+
+            Texture2D big = SolidTexture(64, new Color32(200, 40, 40, 255));
+            try
+            {
+                _resources.MaxAtlasSize = 64;
+                _resources.Register("big", big);
+
+                LogAssert.Expect(LogType.Error, new Regex("shrink|could not pack"));
+                _resources.BeginLoadImage("big");
+
+                Assert.IsTrue(_resources.TryGetImageUv("gold", out Rect uvAfter),
+                              "the previously packed image must survive the refusal");
+                Assert.AreEqual(uvBefore, uvAfter, "with its UVs untouched");
+                Assert.AreSame(atlasBefore, _resources.ImageAtlas, "in the same atlas texture");
+
+                // And the refusal must not retry (and re-log) on every record.
+                _resources.BeginLoadImage("big");
+            }
+            finally
+            {
+                Object.DestroyImmediate(big);
+            }
         }
     }
 }
