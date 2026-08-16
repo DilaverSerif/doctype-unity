@@ -1,0 +1,26 @@
+# One-time helper: produces the .alf activation request file that
+# license.unity3d.com/manual exchanges for a Unity_lic.ulf. Run it from the
+# Actions tab, download the artifact, do the browser step, then add the ulf's
+# CONTENTS as the UNITY_LICENSE repository secret (plus UNITY_EMAIL and
+# UNITY_PASSWORD). After that, unity.yml can run. This workflow can be deleted
+# once the secret exists.
+name: unity-activation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  request-activation-file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Request .alf for this project's Unity version
+        id: alf
+        uses: game-ci/unity-request-activation-file@v2
+
+      - name: Upload the .alf
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-activation-file
+          path: ${{ steps.alf.outputs.filePath }}
