@@ -8,7 +8,7 @@
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Doctype</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleShortVersionString</key><string>0.2.1</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>NSHumanReadableCopyright</key><string>litehtml BSD-3-Clause, gumbo Apache-2.0, stb_truetype public domain</string>
 </dict>

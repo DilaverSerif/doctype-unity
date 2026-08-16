@@ -95,11 +95,11 @@ atlas and uploaded once.
 Unity 6000.0+, Package Manager, "Add package from git URL":
 
 ```
-https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.2.0
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.2.1
 ```
 
 Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS
-ship inside the package, so there is nothing to compile. Drop the `#v0.2.0`
+ship inside the package, so there is nothing to compile. Drop the `#v0.2.1`
 suffix to track master instead of a release.
 
 ### From a clone (for development)
@@ -434,7 +434,7 @@ this reason; the scale setter had not.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 180 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 186 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 2734 frame comparisons, incl. the state matrix
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```

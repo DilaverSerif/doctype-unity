@@ -462,34 +462,162 @@ namespace Doctype
         // Each of these returns what the event dirtied, not merely whether it
         // did: a caller that treats Layout as Paint draws stale geometry the
         // first time a :hover rule resizes something.
+        //
+        // Every input call runs inside Begin/EndDispatch: user-facing events
+        // (AnchorClicked, ElementClicked, bindings, CursorChanged) are queued
+        // by the native callbacks and raised on the way OUT of the call, never
+        // while native frames are on the stack. A handler that loads the next
+        // page -- which is what every menu handler does -- therefore runs with
+        // the previous dispatch fully unwound, and may even Dispose this
+        // document. The native side additionally pins the document through
+        // each dispatch, so a non-C# host is safe too; this layer is what
+        // makes ANY handler safe.
 
         public HtmlDirty MouseMove(Vector2 documentPoint)
         {
-            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_move(_ctx, documentPoint.x, documentPoint.y)
-                           : HtmlDirty.None;
+            if (!IsValid)
+            {
+                return HtmlDirty.None;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return (HtmlDirty)HtmlNative.lhu_mouse_move(_ctx, documentPoint.x, documentPoint.y);
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         public HtmlDirty MouseDown(Vector2 documentPoint)
         {
-            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_down(_ctx, documentPoint.x, documentPoint.y)
-                           : HtmlDirty.None;
+            if (!IsValid)
+            {
+                return HtmlDirty.None;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return (HtmlDirty)HtmlNative.lhu_mouse_down(_ctx, documentPoint.x, documentPoint.y);
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         public HtmlDirty MouseUp(Vector2 documentPoint)
         {
-            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_up(_ctx, documentPoint.x, documentPoint.y)
-                           : HtmlDirty.None;
+            if (!IsValid)
+            {
+                return HtmlDirty.None;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return (HtmlDirty)HtmlNative.lhu_mouse_up(_ctx, documentPoint.x, documentPoint.y);
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         public HtmlDirty MouseLeave()
         {
-            return IsValid ? (HtmlDirty)HtmlNative.lhu_mouse_leave(_ctx) : HtmlDirty.None;
+            if (!IsValid)
+            {
+                return HtmlDirty.None;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return (HtmlDirty)HtmlNative.lhu_mouse_leave(_ctx);
+            }
+            finally
+            {
+                EndDispatch();
+            }
+        }
+
+        // --- deferred event dispatch -----------------------------------------
+
+        private readonly List<Action> _pendingEvents = new List<Action>();
+        private int _dispatchDepth;
+
+        private void BeginDispatch()
+        {
+            _dispatchDepth++;
+        }
+
+        private void EndDispatch()
+        {
+            if (--_dispatchDepth != 0 || _pendingEvents.Count == 0)
+            {
+                return;
+            }
+
+            // Handlers may enqueue again (they are free to call input APIs, or
+            // reload, or dispose); drain a snapshot so this terminates and a
+            // fresh queue keeps collecting.
+            Action[] run = _pendingEvents.ToArray();
+            _pendingEvents.Clear();
+
+            foreach (Action raise in run)
+            {
+                try
+                {
+                    raise();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                }
+            }
+        }
+
+        /// <summary>Runs now when no native frame is live, else after the
+        /// current dispatch unwinds.</summary>
+        private void RaiseDeferred(Action raise)
+        {
+            if (_dispatchDepth > 0)
+            {
+                _pendingEvents.Add(raise);
+                return;
+            }
+
+            try
+            {
+                raise();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
         }
 
         /// <returns>Number of elements that consumed the scroll; 0 means the host should scroll.</returns>
         public int Scroll(Vector2 delta, Vector2 documentPoint)
         {
-            return IsValid ? HtmlNative.lhu_scroll(_ctx, delta.x, delta.y, documentPoint.x, documentPoint.y) : 0;
+            if (!IsValid)
+            {
+                return 0;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return HtmlNative.lhu_scroll(_ctx, delta.x, delta.y, documentPoint.x, documentPoint.y);
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         /// <summary>
@@ -521,7 +649,20 @@ namespace Doctype
         /// </summary>
         public HtmlDirty SetFocus(string selector)
         {
-            return IsValid ? (HtmlDirty)HtmlNative.lhu_set_focus(_ctx, selector) : HtmlDirty.None;
+            if (!IsValid)
+            {
+                return HtmlDirty.None;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return (HtmlDirty)HtmlNative.lhu_set_focus(_ctx, selector);
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         /// <summary>
@@ -539,7 +680,17 @@ namespace Doctype
                 return false;
             }
 
-            int result = HtmlNative.lhu_focus_move(_ctx, (int)direction);
+            int result;
+            BeginDispatch();
+            try
+            {
+                result = HtmlNative.lhu_focus_move(_ctx, (int)direction);
+            }
+            finally
+            {
+                EndDispatch();
+            }
+
             if (result < 0)
             {
                 return false;
@@ -556,7 +707,20 @@ namespace Doctype
         /// </summary>
         public bool Activate(string selector = null)
         {
-            return IsValid && HtmlNative.lhu_activate(_ctx, selector) == 1;
+            if (!IsValid)
+            {
+                return false;
+            }
+
+            BeginDispatch();
+            try
+            {
+                return HtmlNative.lhu_activate(_ctx, selector) == 1;
+            }
+            finally
+            {
+                EndDispatch();
+            }
         }
 
         /// <summary>
@@ -694,7 +858,14 @@ namespace Doctype
         {
             try
             {
-                FromUserData(userData)?.AnchorClicked?.Invoke(HtmlNative.Utf8(url));
+                HtmlDocument doc = FromUserData(userData);
+                if (doc == null)
+                {
+                    return;
+                }
+
+                string href = HtmlNative.Utf8(url);
+                doc.RaiseDeferred(() => doc.AnchorClicked?.Invoke(href));
             }
             catch (Exception e)
             {
@@ -716,19 +887,27 @@ namespace Doctype
                 var click = new HtmlElementClick(HtmlNative.Utf8(id), HtmlNative.Utf8(tag),
                                                      HtmlNative.Utf8(classNames), HtmlNative.Utf8(action));
 
-                doc.ElementClicked?.Invoke(click);
+                // The consumption answer must be synchronous -- litehtml keeps
+                // bubbling on 0 -- but it is derived from the bindings alone,
+                // no user code. The user's handlers run deferred, after the
+                // dispatch unwinds, where reloading or disposing is legal.
+                bool consumed = !string.IsNullOrEmpty(click.Id) && doc._clickBindings.ContainsKey(click.Id);
 
-                // Only an id binding claims the click. Everything else keeps
-                // bubbling, which is what lets a click on a button's label text
-                // reach the button itself.
-                if (!string.IsNullOrEmpty(click.Id) &&
-                    doc._clickBindings.TryGetValue(click.Id, out Action<HtmlElementClick> handler))
+                doc.RaiseDeferred(() =>
                 {
-                    handler(click);
-                    return 1;
-                }
+                    doc.ElementClicked?.Invoke(click);
 
-                return 0;
+                    // Only an id binding claims the click. Everything else
+                    // keeps bubbling, which is what lets a click on a button's
+                    // label text reach the button itself.
+                    if (consumed &&
+                        doc._clickBindings.TryGetValue(click.Id, out Action<HtmlElementClick> handler))
+                    {
+                        handler(click);
+                    }
+                });
+
+                return consumed ? 1 : 0;
             }
             catch (Exception e)
             {
@@ -742,7 +921,14 @@ namespace Doctype
         {
             try
             {
-                FromUserData(userData)?.CursorChanged?.Invoke(HtmlNative.Utf8(cursor));
+                HtmlDocument doc = FromUserData(userData);
+                if (doc == null)
+                {
+                    return;
+                }
+
+                string name = HtmlNative.Utf8(cursor);
+                doc.RaiseDeferred(() => doc.CursorChanged?.Invoke(name));
             }
             catch (Exception e)
             {

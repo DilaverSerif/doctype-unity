@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#define LHU_VERSION_STRING "0.2.0"
+#define LHU_VERSION_STRING "0.2.1"
 
 // EXPERIMENT E2: the retained display list is switched on and off at runtime,
 // not at build time. Adding a pass to the benchmark has already been shown to
@@ -1942,7 +1942,12 @@ try
     const bool dirty_diff_trusted = !ctx->dirty_suspect;
     ctx->dirty_suspect = false;
 
-    if(ctx->doc)
+    // Pinned like the input paths: drawing fires the image callbacks, and a
+    // host that reloads the document from one of them must not have the old
+    // document die inside its own draw.
+    const litehtml::document::ptr doc = ctx->doc;
+
+    if(doc)
     {
         // Rasterizing a glyph can force the atlas to grow, which invalidates
         // every UV emitted so far. Detect that and record once more.
@@ -1966,7 +1971,7 @@ try
                 // rendered. When E1 took its fast path nothing moved, so the
                 // walk finds only what lhu_set_text marked by hand -- which is
                 // the whole reason that mark_element_dirty() call exists.
-                const bool anything_dirty = ctx->cache.refresh(ctx->doc->root_render());
+                const bool anything_dirty = ctx->cache.refresh(doc->root_render());
                 const lhu::QuadCache::Plan p =
                     ctx->cache.plan(anything_dirty, ctx->doc_width, ctx->doc_height);
 
@@ -1987,7 +1992,7 @@ try
 
                 litehtml::position clip(litehtml::pixel_t(0.f), litehtml::pixel_t(0.f),
                                         litehtml::pixel_t(ctx->doc_width), litehtml::pixel_t(ctx->doc_height));
-                ctx->doc->draw(0, litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), &clip);
+                doc->draw(0, litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), &clip);
 
                 ctx->container.end_record();
                 ctx->cache.end_frame(p, ctx->doc_width, ctx->doc_height);
@@ -2010,7 +2015,7 @@ try
 
             litehtml::position clip(litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), litehtml::pixel_t(ctx->doc_width),
                                     litehtml::pixel_t(ctx->doc_height));
-            ctx->doc->draw(0, litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), &clip);
+            doc->draw(0, litehtml::pixel_t(0.f), litehtml::pixel_t(0.f), &clip);
 
             ctx->container.end_record();
 
@@ -2257,7 +2262,11 @@ namespace
 // hooks are not attached at all (quad cache disabled), nobody was watching, so
 // every change has to be treated as geometry -- stale layout is the failure
 // mode this contract exists to prevent, and a pessimistic extra layout is not.
-int32_t classify_input_change(LhuContext* ctx, bool changed)
+//
+// Takes the caller's PINNED document rather than reading ctx->doc: a callback
+// fired during the dispatch may have replaced the context's document, and the
+// classification is about the one that was dispatched into.
+int32_t classify_input_change(LhuContext* ctx, const litehtml::document::ptr& doc, bool changed)
 {
     if(!changed)
     {
@@ -2266,7 +2275,7 @@ int32_t classify_input_change(LhuContext* ctx, bool changed)
 
     int32_t flags = LHU_DIRTY_PAINT;
 
-    const bool watched = ctx->doc->draw_cache() != nullptr;
+    const bool watched = doc->draw_cache() != nullptr;
     if(!watched || ctx->cache.take_geometry_changed())
     {
         flags |= LHU_DIRTY_LAYOUT;
@@ -2276,6 +2285,17 @@ int32_t classify_input_change(LhuContext* ctx, bool changed)
 }
 } // namespace
 
+// Every entry point that dispatches into the document pins it with a local
+// shared_ptr first. The reason is the most ordinary UI pattern there is: a
+// click handler that loads the next page. The host callback fires while the
+// clicked document's element frames are still on the stack, lhu_load_html
+// replaces ctx->doc, and without the pin the temporary reference inside
+// litehtml's own dispatch becomes the last owner -- so ~document runs inside
+// one of its own element's member functions and a half-destroyed object makes
+// a pure virtual call. The pin defers that destruction to the end of the
+// export, where no document frame is live. (Found as a SIGABRT in a real
+// game's editor on the first day the package was used in anger.)
+
 int32_t lhu_mouse_move(LhuContext* ctx, float x, float y)
 try
 {
@@ -2283,13 +2303,15 @@ try
     {
         return 0;
     }
+    const litehtml::document::ptr doc = ctx->doc;
+
     // Clear a stale flag so the classification below reads only what THIS
     // event did, then let the hook observe the restyle as it happens.
     ctx->cache.take_geometry_changed();
 
-    const bool changed = ctx->doc->on_mouse_over(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
-                                                 litehtml::pixel_t(y), kIgnoreRedraw);
-    return classify_input_change(ctx, changed);
+    const bool changed = doc->on_mouse_over(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
+                                            litehtml::pixel_t(y), kIgnoreRedraw);
+    return classify_input_change(ctx, doc, changed);
 }
 LHU_API_CATCH(ctx, 0)
 
@@ -2300,11 +2322,13 @@ try
     {
         return 0;
     }
+    const litehtml::document::ptr doc = ctx->doc;
+
     ctx->cache.take_geometry_changed();
 
-    const bool changed = ctx->doc->on_lbutton_down(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
-                                                   litehtml::pixel_t(y), kIgnoreRedraw);
-    return classify_input_change(ctx, changed);
+    const bool changed = doc->on_lbutton_down(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
+                                              litehtml::pixel_t(y), kIgnoreRedraw);
+    return classify_input_change(ctx, doc, changed);
 }
 LHU_API_CATCH(ctx, 0)
 
@@ -2315,11 +2339,13 @@ try
     {
         return 0;
     }
+    const litehtml::document::ptr doc = ctx->doc;
+
     ctx->cache.take_geometry_changed();
 
-    const bool changed = ctx->doc->on_lbutton_up(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
-                                                 litehtml::pixel_t(y), kIgnoreRedraw);
-    return classify_input_change(ctx, changed);
+    const bool changed = doc->on_lbutton_up(litehtml::pixel_t(x), litehtml::pixel_t(y), litehtml::pixel_t(x),
+                                            litehtml::pixel_t(y), kIgnoreRedraw);
+    return classify_input_change(ctx, doc, changed);
 }
 LHU_API_CATCH(ctx, 0)
 
@@ -2330,10 +2356,12 @@ try
     {
         return 0;
     }
+    const litehtml::document::ptr doc = ctx->doc;
+
     ctx->cache.take_geometry_changed();
 
-    const bool changed = ctx->doc->on_mouse_leave(kIgnoreRedraw);
-    return classify_input_change(ctx, changed);
+    const bool changed = doc->on_mouse_leave(kIgnoreRedraw);
+    return classify_input_change(ctx, doc, changed);
 }
 LHU_API_CATCH(ctx, 0)
 
@@ -2344,9 +2372,10 @@ try
     {
         return 0;
     }
+    const litehtml::document::ptr doc = ctx->doc;
 
-    const auto scrolled = ctx->doc->on_scroll(litehtml::pixel_t(dx), litehtml::pixel_t(dy), litehtml::pixel_t(x),
-                                              litehtml::pixel_t(y), litehtml::pixel_t(x), litehtml::pixel_t(y));
+    const auto scrolled = doc->on_scroll(litehtml::pixel_t(dx), litehtml::pixel_t(dy), litehtml::pixel_t(x),
+                                         litehtml::pixel_t(y), litehtml::pixel_t(x), litehtml::pixel_t(y));
     if(!scrolled.empty())
     {
         // render() rebuilds every scroll_view from the freshly measured content
@@ -2469,7 +2498,7 @@ litehtml::element::ptr find_by_id(const litehtml::element::ptr& el, const char* 
 // geometry flag, restyle under the hook's watch, then classify what the
 // restyle dirtied. A page with no :focus rule restyles nothing and reports 0,
 // which is correct -- the state still moved, and lhu_focused_id() says where.
-int32_t focus_apply(LhuContext* ctx, const litehtml::element::ptr& next)
+int32_t focus_apply(LhuContext* ctx, const litehtml::document::ptr& doc, const litehtml::element::ptr& next)
 {
     const auto prev = ctx->focused.lock();
     if(prev == next)
@@ -2494,12 +2523,12 @@ int32_t focus_apply(LhuContext* ctx, const litehtml::element::ptr& next)
     ctx->focused = next;
 
     bool changed = false;
-    if(toggled && ctx->doc->root())
+    if(toggled && doc->root())
     {
-        changed = ctx->doc->root()->find_styles_changes(kIgnoreRedraw);
+        changed = doc->root()->find_styles_changes(kIgnoreRedraw);
     }
 
-    return classify_input_change(ctx, changed);
+    return classify_input_change(ctx, doc, changed);
 }
 } // namespace
 
@@ -2513,10 +2542,12 @@ try
         return 0;
     }
 
+    const litehtml::document::ptr doc = ctx->doc;
+
     litehtml::element::ptr next;
     if(selector && *selector)
     {
-        const auto root = ctx->doc->root();
+        const auto root = doc->root();
         next            = root ? root->select_one(std::string(selector)) : nullptr;
         if(!next)
         {
@@ -2526,7 +2557,7 @@ try
     }
 
     ctx->last_error.clear();
-    return focus_apply(ctx, next);
+    return focus_apply(ctx, doc, next);
 }
 LHU_API_CATCH(ctx, 0)
 
@@ -2538,7 +2569,9 @@ try
         return -1;
     }
 
-    const auto root = ctx->doc->root();
+    const litehtml::document::ptr doc = ctx->doc;
+
+    const auto root = doc->root();
     if(!root)
     {
         return -1;
@@ -2570,7 +2603,7 @@ try
                 best = i;
             }
         }
-        return focus_apply(ctx, candidates[best].first);
+        return focus_apply(ctx, doc, candidates[best].first);
     }
 
     // The author's override outranks any metric. Automatic spatial navigation
@@ -2583,7 +2616,7 @@ try
         litehtml::position ignored;
         if(target && focusable(target) && focus_box(ctx, target, ignored))
         {
-            return focus_apply(ctx, target);
+            return focus_apply(ctx, doc, target);
         }
         // A dangling override falls through to the metric rather than
         // stranding the user.
@@ -2656,7 +2689,7 @@ try
         return -1; // edge of the page in that direction; focus stays put
     }
 
-    return focus_apply(ctx, best);
+    return focus_apply(ctx, doc, best);
 }
 LHU_API_CATCH(ctx, -1)
 
@@ -2668,10 +2701,15 @@ try
         return 0;
     }
 
+    // Pinned across on_click(): the callback it fires is exactly where a
+    // menu's handler loads the next page. See the block comment above the
+    // mouse events.
+    const litehtml::document::ptr doc = ctx->doc;
+
     litehtml::element::ptr el;
     if(selector && *selector)
     {
-        const auto root = ctx->doc->root();
+        const auto root = doc->root();
         el              = root ? root->select_one(std::string(selector)) : nullptr;
     }
     else

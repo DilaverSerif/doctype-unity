@@ -62,11 +62,11 @@ ama tek bir `min` işlemi.
 Unity 6000.0+, Package Manager, "Add package from git URL":
 
 ```
-https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.2.0
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.2.1
 ```
 
 macOS (universal), Android (arm64-v8a) ve iOS native plugin'leri paketle
-birlikte hazır geliyor; derlemeniz gereken bir şey yok. `#v0.2.0` ekini
+birlikte hazır geliyor; derlemeniz gereken bir şey yok. `#v0.2.1` ekini
 kaldırırsanız release yerine master'ı takip edersiniz. Aşağıdaki derleme
 adımları yalnız native tarafı değiştirenler için.
 
@@ -226,7 +226,7 @@ litehtml font yüklemez; siz vermelisiniz. İki yol:
 LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 ```
 
-180 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
+186 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
 rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
 Retained quad cache'in doğruluğu ayrı bir araçla kanıtlanıyor:
 `lhu_verify_quadcache`, cache'li ve cache'siz kayıtları kare kare
@@ -303,7 +303,7 @@ patlar.
 Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -testResults pm.xml
 ```
 
-40 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
+45 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
 sürüyor; PlayMode testleri ise `HtmlView`'ın **MonoBehaviour yaşam
 döngüsünden** geçiyor: `OnEnable`, `LateUpdate` render döngüsü, yüzeyin yeniden
 oluşturulması, `Destroy` sonrası temizlik. Ömür ve kare-kare hatalar burada yaşar.

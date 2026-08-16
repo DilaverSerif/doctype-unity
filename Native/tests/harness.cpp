@@ -1625,6 +1625,79 @@ void test_focus()
     lhu_destroy(ctx);
 }
 
+// The crash a real game found on day one: a click handler that loads the next
+// page. lhu_activate / lhu_mouse_up dispatch into the document, the host's
+// on_element_click callback calls lhu_load_html, and the context drops its
+// reference to the OLD document -- whose element frames are still live on the
+// stack. Without the pin every dispatching export now holds, the temporary
+// shared_ptr inside html_tag::on_click() became the last owner, ~document ran
+// inside its own element's member function, and a half-destroyed object made
+// a pure virtual call. SIGABRT, editor gone.
+LhuContext* g_reload_ctx = nullptr;
+int         g_reload_fired = 0;
+
+void test_reentrant_reload_from_click()
+{
+    std::printf("\n[reentrant reload]\n");
+
+    LhuHostCallbacks cb {};
+    cb.on_element_click = [](void*, const char* id, const char*, const char*, const char*) -> int32_t {
+        if(id && std::strcmp(id, "next") == 0 && g_reload_ctx)
+        {
+            ++g_reload_fired;
+            // The pattern every menu uses: click -> load the next page. This
+            // re-enters the ABI while the clicked document's frames are still
+            // on the stack below us.
+            lhu_load_html(g_reload_ctx,
+                          "<body style='margin:0'><div id='page2' tabindex='0'>ikinci sayfa</div></body>",
+                          nullptr);
+            lhu_layout(g_reload_ctx, 300.f);
+        }
+        return 1;
+    };
+
+    LhuContext* ctx = lhu_create(&cb);
+    g_reload_ctx    = ctx;
+
+    const auto ahem = read_file(g_root + "/third_party/litehtml/containers/test/fonts/ahem.ttf");
+    lhu_register_font(ctx, "ahem", 400, 0, ahem.data(), static_cast<int32_t>(ahem.size()));
+    lhu_set_default_font(ctx, "ahem", 16.f);
+    lhu_set_viewport(ctx, 300.f, 200.f);
+    lhu_load_html(ctx,
+                  "<body style='margin:0'><div id='next' tabindex='0' "
+                  "style='width:100px;height:40px'>ileri</div></body>",
+                  nullptr);
+    lhu_layout(ctx, 300.f);
+
+    // Through the semantic activation path.
+    g_reload_fired = 0;
+    check(lhu_activate(ctx, "#next") == 1, "activating the button succeeds");
+    check(g_reload_fired == 1, "and the handler really reloaded mid-dispatch");
+
+    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    check(lhu_element_rect(ctx, "#page2", &x, &y, &w, &h) == 1, "the new page is live afterwards");
+
+    LhuFrame f {};
+    lhu_record(ctx, &f);
+    check(f.quad_count > 0, "and records a frame");
+
+    // And through the pointer path, which is where the wild crash came from.
+    lhu_load_html(ctx,
+                  "<body style='margin:0'><div id='next' tabindex='0' "
+                  "style='width:100px;height:40px'>ileri</div></body>",
+                  nullptr);
+    lhu_layout(ctx, 300.f);
+
+    g_reload_fired = 0;
+    lhu_mouse_down(ctx, 50.f, 20.f);
+    lhu_mouse_up(ctx, 50.f, 20.f);
+    check(g_reload_fired == 1, "a real click reloaded mid-dispatch too");
+    check(lhu_element_rect(ctx, "#page2", &x, &y, &w, &h) == 1, "and survived it");
+
+    g_reload_ctx = nullptr;
+    lhu_destroy(ctx);
+}
+
 // No C++ exception may cross the C ABI: the real caller is a P/Invoke frame,
 // and an escaped exception is undefined behaviour there. The harness cannot
 // inject a throw into an arbitrary export, so this drives the entry points
@@ -1698,6 +1771,7 @@ int main(int argc, char** argv)
     test_scroll_survives_a_resent_viewport();
     test_text_transform();
     test_focus();
+    test_reentrant_reload_from_click();
     test_abi_exception_boundary();
     test_demo_page();
 

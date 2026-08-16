@@ -4,6 +4,28 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-16
+
+### Fixed
+
+- CRITICAL: a click handler that loads a new document (the ordinary menu
+  pattern: `BindClick`/`AnchorClicked` handler calling `LoadHtml`) crashed
+  the editor with a pure virtual call. The handler fired while the clicked
+  document's native frames were still on the stack; replacing the document
+  made a temporary reference inside the dispatch its last owner, and the
+  document destroyed itself under its own element's member function. Two
+  layers now prevent this: every dispatching native export pins the document
+  for the duration of the call, and the managed layer defers user events
+  (AnchorClicked, ElementClicked, click bindings, CursorChanged) until the
+  input call unwinds, so a handler may reload or even dispose freely.
+
+### Added
+
+- An interaction gauntlet in PlayMode: reload-from-click open/close
+  toggling, anchor navigation loops, button spam with mutating handlers,
+  drag-scroll storms, hover flicker over live mutations. Input the way a
+  player delivers it, asserted to end in the state the last input asked for.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added
