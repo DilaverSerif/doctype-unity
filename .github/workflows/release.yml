@@ -51,14 +51,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          {
+            echo "Install in Unity: Package Manager > Add package from git URL:"
+            echo
+            echo '```'
+            echo "https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#$GITHUB_REF_NAME"
+            echo '```'
+            echo
+            echo "Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS (static lib) are inside the package. All native checks passed on this exact revision before the release was cut."
+          } > notes.md
           gh release create "$GITHUB_REF_NAME" \
             "com.dopaminefact.doctype-$VERSION.tgz" \
             --title "Doctype $GITHUB_REF_NAME" \
             --generate-notes \
-            --notes "Install in Unity: Package Manager > Add package from git URL:
-
-\`\`\`
-https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#$GITHUB_REF_NAME
-\`\`\`
-
-Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS (static lib) are inside the package. All native checks passed on this exact revision before the release was cut."
+            --notes-file notes.md
