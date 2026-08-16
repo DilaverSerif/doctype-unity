@@ -14,8 +14,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   click path (anchors and element clicks fire) without touching pointer
   state. New API: `HtmlView.SetFocus/MoveFocus/Activate/FocusedId` and the
   `HtmlFocusNavigator` component bridging Unity's EventSystem
-  Move/Submit/Cancel. v1 scope is a single view; text input and
-  cross-surface navigation are out.
+  Move/Submit/Cancel. Multi-panel HUDs wire each navigator's
+  Up/Right/Down/Left neighbours: walking off a panel's edge hands focus to
+  the neighbour as a transaction (the giver keeps focus unless the receiver
+  really takes it), each panel remembers its last focused element for the
+  way back, and the EventSystem selection follows. Text input and IME are
+  out of scope.
 
 - Persistent mesh with ranged uploads: the frame now carries the stable quad
   prefix/suffix from the native diff, and the mesh builder keeps its buffers

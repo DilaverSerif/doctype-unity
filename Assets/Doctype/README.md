@@ -176,8 +176,14 @@ sapma cezası + yanal örtüşme bonusu) bir sonraki elemanı seçer;
 etkinleştirir: anchor'lar `AnchorClicked`'a, diğerleri `ElementClicked`'a
 düşer. `HtmlFocusNavigator` bileşeni bunları EventSystem'in
 Move/Submit/Cancel olaylarına bağlar; nesneyi
-`EventSystem.SetSelectedGameObject` ile seçili yapmanız yeterlidir. v1 tek
-yüzey içindir; metin girişi ve yüzeyler arası gezinme kapsam dışıdır.
+`EventSystem.SetSelectedGameObject` ile seçili yapmanız yeterlidir.
+
+Çok panelli HUD'da (envanter + hotbar + ekipman gibi) navigator'ın
+Inspector'daki **Up/Right/Down/Left komşu** alanlarını bağlayın: focus bir
+panelin kenarından çıkınca komşu panele devredilir. Devir bir transaction'dır
+(komşu gerçekten bir şey odaklamadıkça veren panel bırakmaz), her panel son
+odağını hatırlar (geri dönüşte aynı slota gelinir) ve EventSystem seçimi
+otomatik taşınır. Metin girişi ve IME kapsam dışıdır.
 
 vw/vh birimleri viewport değiştiğinde yeniden hesaplanır. Bu önemli, çünkü CSS
 viewport'u her zaman yazdığınız referans genişlik değildir: `DeviceScale` 0.5'te
@@ -281,7 +287,7 @@ patlar.
 Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -testResults pm.xml
 ```
 
-37 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
+40 test. EditMode testleri `HtmlDocument`/`HtmlRenderer`'ı doğrudan
 sürüyor; PlayMode testleri ise `HtmlView`'ın **MonoBehaviour yaşam
 döngüsünden** geçiyor: `OnEnable`, `LateUpdate` render döngüsü, yüzeyin yeniden
 oluşturulması, `Destroy` sonrası temizlik. Ömür ve kare-kare hatalar burada yaşar.
