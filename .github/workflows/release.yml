@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install ninja and a proportional font
-        run: sudo apt-get update && sudo apt-get install -y ninja-build fonts-dejavu-core
+        run: sudo apt-get update && sudo apt-get install -y ninja-build fonts-liberation
 
       - name: Build native + tests
         run: |

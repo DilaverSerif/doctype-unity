@@ -180,10 +180,10 @@ std::vector<uint8_t> read_proportional_font(bool bold)
     const char* candidates[] = {
         bold ? "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
              : "/System/Library/Fonts/Supplemental/Arial.ttf",
-        bold ? "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-             : "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         bold ? "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
              : "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        bold ? "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+             : "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     };
 
     for(const char* path : candidates)

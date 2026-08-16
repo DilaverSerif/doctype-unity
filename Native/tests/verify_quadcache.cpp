@@ -493,10 +493,14 @@ int32_t skipped_layouts(LhuContext* ctx)
 
 int main()
 {
+    // Order matters: the fresh-document goldens were fixed against Arial's
+    // metrics, and Liberation Sans is metric-compatible with Arial by design
+    // (same advances, same ascent/descent), so it reproduces them on a Linux
+    // runner. DejaVu does not; it is a last resort that will fail the goldens.
     const char* font_env = std::getenv("LHU_FONT");
     const char* regular_candidates[] = {font_env, "/System/Library/Fonts/Supplemental/Arial.ttf",
-                                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                                         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                                         "/system/fonts/Roboto-Regular.ttf"};
 
     std::vector<uint8_t> regular;
@@ -519,8 +523,8 @@ int main()
 
     std::vector<uint8_t> bold;
     for(const char* c : {"/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-                         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"})
+                         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"})
     {
         bold = read_file(c);
         if(!bold.empty())
