@@ -117,6 +117,22 @@ class Container : public litehtml::document_container
         m_default_font_size   = size;
     }
 
+    /// Document language, fed to litehtml through get_language() and consulted
+    /// by transform_text(): Turkish gets the four-way dotted/dotless i mapping
+    /// that locale-blind casing corrupts in both directions. Takes effect for
+    /// documents loaded after the call.
+    void set_language(const std::string& language, const std::string& culture)
+    {
+        m_language = language;
+        m_culture  = culture;
+    }
+
+    bool language_is_turkish() const
+    {
+        return m_language.size() >= 2 && (m_language[0] == 't' || m_language[0] == 'T') &&
+               (m_language[1] == 'r' || m_language[1] == 'R');
+    }
+
     const std::string& base_url() const { return m_base_url; }
     const std::string& caption() const { return m_caption; }
     const std::string& cursor() const { return m_cursor; }
@@ -204,6 +220,9 @@ class Container : public litehtml::document_container
 
     std::string m_default_font_family = "sans-serif";
     float       m_default_font_size   = 16.f;
+
+    std::string m_language = "en";
+    std::string m_culture;
 
     float m_viewport_w   = 800.f;
     float m_viewport_h   = 600.f;

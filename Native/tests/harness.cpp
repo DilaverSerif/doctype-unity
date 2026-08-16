@@ -7,6 +7,7 @@
 //   build/macos/bin/lhu_harness [output-dir]
 
 #include "lhu_api.h"
+#include "lhu_container.h"
 #include "lhu_font.h"
 #include "lhu_raster.h"
 
@@ -1442,6 +1443,53 @@ void test_scroll_survives_a_resent_viewport()
     check_near(w, 200.f, 0.5f, "50vw follows a viewport that actually changed");
 }
 
+// text-transform casing: locale-independent simple mappings for Latin-1 and
+// Latin Extended-A for everyone, and the four-way Turkish i only when the
+// document says tr -- because both directions of getting that wrong are the
+// same bug: "IMPORTANT" must not lowercase to "ımportant" in English, and
+// "için" must not uppercase to "IÇIN" in Turkish.
+void test_text_transform()
+{
+    std::printf("\n[text-transform casing]\n");
+
+    lhu::FontManager fonts;
+    LhuHostCallbacks cb {};
+    lhu::Container   container(fonts, cb);
+
+    const auto tf = [&](const char* text, litehtml::text_transform tt) {
+        std::string s(text);
+        container.transform_text(s, tt);
+        return s;
+    };
+
+    // English (the default): ASCII i maps plainly, accents map, Turkish
+    // specials stay untouched.
+    check(tf("fig", litehtml::text_transform_uppercase) == "FIG", "english i uppercases to plain I");
+    check(tf("IMPORTANT", litehtml::text_transform_lowercase) == "important",
+          "english I lowercases to plain i");
+    check(tf("café", litehtml::text_transform_uppercase) == "CAFÉ", "latin-1 accents uppercase");
+    check(tf("ÜBER", litehtml::text_transform_lowercase) == "über", "and lowercase");
+
+    container.set_language("tr", "tr-TR");
+
+    check(tf("için", litehtml::text_transform_uppercase) == "İÇİN", "turkish i uppercases dotted");
+    check(tf("ışık", litehtml::text_transform_uppercase) == "IŞIK", "turkish dotless i uppercases to I");
+    check(tf("IŞIK", litehtml::text_transform_lowercase) == "ışık", "turkish I lowercases dotless");
+    check(tf("İSTANBUL", litehtml::text_transform_lowercase) == "istanbul",
+          "dotted capital lowercases to plain i");
+    check(tf("çağrı gücü", litehtml::text_transform_uppercase) == "ÇAĞRI GÜCÜ",
+          "ş/ğ/ç/ü all map through Latin Extended-A");
+    check(tf("istanbul köyü", litehtml::text_transform_capitalize) == "İstanbul Köyü",
+          "capitalize uses the locale mapping at word starts");
+
+    // What is deliberately left alone.
+    container.set_language("en", "");
+    check(tf("straße", litehtml::text_transform_uppercase) == "STRAßE",
+          "one-to-many mappings are out of scope and pass through");
+    check(tf("için", litehtml::text_transform_uppercase) == "IÇIN",
+          "without tr, i stays plain (and that is the point)");
+}
+
 // Gamepad focus: its own state, not pointer emulation. These pin the whole
 // v1 contract: tabindex opt-in, :focus restyling classified as paint or
 // layout through the same hook the mouse events use, the spatial metric with
@@ -1648,6 +1696,7 @@ int main(int argc, char** argv)
     test_subtree_relayout();
     test_input_dirty_flags();
     test_scroll_survives_a_resent_viewport();
+    test_text_transform();
     test_focus();
     test_abi_exception_boundary();
     test_demo_page();

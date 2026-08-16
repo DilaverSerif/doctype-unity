@@ -54,6 +54,13 @@ enum LhuMasterCss
 
 LHU_API void lhu_set_master_css(LhuContext* ctx, int32_t mode);
 
+// Document language and culture ("tr", "tr-TR"), fed to litehtml and
+// consulted by text-transform: Turkish gets the four-way dotted/dotless i
+// mapping (i->İ, I->ı) that locale-blind casing corrupts in both directions.
+// Takes effect for documents loaded after the call. A NULL language resets to
+// "en"; a NULL culture clears it.
+LHU_API void lhu_set_language(LhuContext* ctx, const char* language, const char* culture);
+
 LHU_API void lhu_set_viewport(LhuContext* ctx, float width, float height);
 LHU_API void lhu_set_device_scale(LhuContext* ctx, float scale);
 

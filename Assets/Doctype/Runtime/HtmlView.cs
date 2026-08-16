@@ -933,6 +933,15 @@ namespace Doctype
             return consumed > 0;
         }
 
+        /// <summary>
+        /// Document language and culture ("tr", "tr-TR") for locale-aware
+        /// text-transform. Set before loading the markup it should affect.
+        /// </summary>
+        public void SetLanguage(string language, string culture = "")
+        {
+            _document?.SetLanguage(language, culture);
+        }
+
         // --- gamepad/keyboard focus ------------------------------------------
 
         /// <summary>

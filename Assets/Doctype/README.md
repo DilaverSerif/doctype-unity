@@ -190,6 +190,22 @@ viewport'u her zaman yazdığınız referans genişlik değildir: `DeviceScale` 
 taban yaptığı için küçük ekranlar daha keskin değil, **CSS olarak daha geniş**
 bir sayfa alır. px ile ölçülen bir ızgara orada sarar; vw ile ölçülen sarmaz.
 
+### Görseller
+
+`<img src="gold">` için iki hazır sağlayıcı var; ikisi de aynı GameObject'e
+eklenip `HtmlView` tarafından otomatik bulunur:
+
+1. **`HtmlSpriteResources` (production önerisi):** build-time bir
+   SpriteAtlas'ın sprite'larını doğrudan kullanır; runtime paketleme yok.
+   Kontrat: atlasta **Allow Rotation ve Tight Packing kapalı** olmalı ve tüm
+   sprite'lar tek sayfada (aynı texture'da) olmalı — kural bozulursa sağlayıcı
+   sprite adıyla açık hata verir, sessizce yanlış çizmez.
+2. **`HtmlResources`:** normal `Texture2D`'leri çalışırken tek atlasa
+   paketler (kaynaklarda Read/Write açık olmalı). `Max Atlas Size`'a
+   sığmayan pack, görselleri bulanıklaştırmak yerine yüksek sesle reddedilir.
+
+Özel ihtiyaç için `IHtmlResourceProvider`'ı kendiniz doldurabilirsiniz.
+
 ### Fontlar
 
 litehtml font yüklemez; siz vermelisiniz. İki yol:
@@ -210,7 +226,7 @@ litehtml font yüklemez; siz vermelisiniz. İki yol:
 LHU_ROOT="$PWD/Native" ./Native/build/macos/bin/lhu_harness Native/build/out
 ```
 
-168 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
+180 check. Ayrıca `Native/tests/lhu_raster.h` içindeki **referans CPU
 rasterizer** ile `demo.png` üretir: shader'ın yürütülebilir spesifikasyonu.
 Retained quad cache'in doğruluğu ayrı bir araçla kanıtlanıyor:
 `lhu_verify_quadcache`, cache'li ve cache'siz kayıtları kare kare
@@ -274,7 +290,7 @@ kullanım yolu değil.
 Unity -batchmode -projectPath . -runTests -testPlatform EditMode -testResults results.xml
 ```
 
-51 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
+54 test. `-quit` **kullanmayın** (testler çalışmadan çıkar) ve `-nographics`
 **kullanmayın** (GPU testleri anlamsızlaşır).
 
 `HtmlRenderTests` gerçek bir `RenderTexture`'a çizip `ReadPixels` ile geri
@@ -333,11 +349,12 @@ kırpma, metin dekorasyonları, liste işaretleyicileri, `:hover`, `<a>` tıklam
 - **JavaScript.** litehtml'de JS motoru yok. Dinamik UI için DOM'u C# tarafından
   güncelleyip yeniden layout alın.
 - **CSS animasyon/transition/transform.** litehtml desteklemiyor.
-- **Görseller** boru hattı bağlandı (`IHtmlResourceProvider`) ama hazır bir
-  atlas sağlayıcısı bu sürümde yok, kendi implementasyonunuzu verin.
-- **Karmaşık metin şekillendirme.** stb_truetype kullanılıyor: Latin/Türkçe
-  kusursuz, Arapça/Farsça/Hintçe için HarfBuzz gerekir.
-- `text-transform` yalnızca ASCII (Türkçe i/İ dönüşümü doğru değil).
+- **Karmaşık metin şekillendirme.** stb_truetype kullanılıyor: basit
+  Latin/Türkçe/Kiril oyun UI metinleri için yeterli; Arapça/Farsça/Hintçe
+  için HarfBuzz + BiDi gerekir.
+- `text-transform` ASCII + Latin-1 + Latin Extended-A basit eşlemeleri kapsar
+  (ç/ş/ğ/ö/ü dahil); Türkçe i/İ-ı/I dörtlüsü için `HtmlView.SetLanguage("tr",
+  "tr-TR")` çağırın (yüklemeden önce). Bire-çok eşlemeler (ß→SS) kapsam dışı.
 
 ## Bilinen sınırlar
 

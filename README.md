@@ -434,7 +434,7 @@ this reason; the scale setter had not.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 168 checks, no Unity and no GPU
+Native/build_macos.sh harness        # 180 checks, no Unity and no GPU
 Native/build/macos/bin/lhu_verify_quadcache   # 2734 frame comparisons, incl. the state matrix
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```

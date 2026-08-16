@@ -32,6 +32,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The benchmark's vertex columns are now measured at the buffer instead of
   derived from the quad count.
 
+- HtmlSpriteResources: a production image provider over sprites that share
+  one texture (a build-time SpriteAtlas page). No runtime packing; refuses
+  rotated, tight-packed or off-page sprites loudly by name.
+- Locale-aware text-transform: simple case mappings for Latin-1 Supplement
+  and Latin Extended-A for every language (café/über/çağrı all case
+  correctly), and the four-way Turkish dotted/dotless i when the document
+  language is set to Turkish via the new `SetLanguage("tr", "tr-TR")`.
+  One-to-many mappings (ß to SS) stay out of scope.
+
 ### Fixed
 
 - HtmlResources no longer accepts an image atlas that Unity's PackTextures

@@ -492,6 +492,20 @@ namespace Doctype
             return IsValid ? HtmlNative.lhu_scroll(_ctx, delta.x, delta.y, documentPoint.x, documentPoint.y) : 0;
         }
 
+        /// <summary>
+        /// Document language and culture ("tr", "tr-TR"): Turkish gets the
+        /// four-way dotted/dotless i mapping in text-transform that
+        /// locale-blind casing corrupts. Takes effect for documents loaded
+        /// after the call, so set it before <see cref="LoadHtml"/>.
+        /// </summary>
+        public void SetLanguage(string language, string culture = "")
+        {
+            if (IsValid)
+            {
+                HtmlNative.lhu_set_language(_ctx, language, culture);
+            }
+        }
+
         // --- gamepad/keyboard focus ------------------------------------------
         //
         // Focus is its own state, not pointer emulation: the element carries

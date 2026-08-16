@@ -819,43 +819,197 @@ void Container::set_cursor(const char* cursor)
     }
 }
 
+namespace
+{
+// Simple one-to-one case mapping over the two Unicode blocks a Latin-script
+// game UI actually uses: ASCII, Latin-1 Supplement and Latin Extended-A.
+// This covers Turkish's non-i letters (ç/Ç, ö/Ö, ü/Ü at U+00Ex/U+00Cx;
+// ş/Ş U+015F/U+015E, ğ/Ğ U+011F/U+011E) and Western European accents, all of
+// which are locale-independent mappings -- so they apply for every language.
+// The four-way Turkish i (i→İ, I→ı) is NOT here: it is locale-DEPENDENT, and
+// applying it to English would corrupt "IMPORTANT" exactly the way not
+// applying it corrupts "için". The caller passes `turkish` for that.
+//
+// Deliberately not in scope: one-to-many mappings (ß→SS), U+0149, U+017F,
+// and anything past U+017F. Those need a real Unicode library (the HarfBuzz
+// sub-project's territory) and none of them appear in a Turkish or Western
+// European game UI string.
+uint32_t simple_upper(uint32_t cp, bool turkish)
+{
+    if(cp < 0x80)
+    {
+        if(turkish && cp == 'i')
+        {
+            return 0x0130; // İ
+        }
+        return cp >= 'a' && cp <= 'z' ? cp - 0x20 : cp;
+    }
+
+    // Latin-1 Supplement lowercase: U+00E0..U+00FE, minus ÷ (U+00F7); ß and ÿ
+    // have no simple uppercase in range and stay as they are.
+    if(cp >= 0x00E0 && cp <= 0x00FE && cp != 0x00F7)
+    {
+        return cp - 0x20;
+    }
+
+    if(turkish && cp == 0x0131) // ı -> I
+    {
+        return 'I';
+    }
+
+    // Latin Extended-A comes in upper/lower pairs with three parities.
+    if((cp >= 0x0100 && cp <= 0x0137) || (cp >= 0x014A && cp <= 0x0177))
+    {
+        return (cp & 1) != 0 ? cp - 1 : cp; // even upper, odd lower
+    }
+    if(cp >= 0x013A && cp <= 0x0148 && cp != 0x0149)
+    {
+        return (cp & 1) == 0 ? cp - 1 : cp; // odd upper, even lower
+    }
+    if(cp >= 0x017A && cp <= 0x017E)
+    {
+        return (cp & 1) == 0 ? cp - 1 : cp;
+    }
+
+    return cp;
+}
+
+uint32_t simple_lower(uint32_t cp, bool turkish)
+{
+    if(cp < 0x80)
+    {
+        if(turkish && cp == 'I')
+        {
+            return 0x0131; // ı
+        }
+        return cp >= 'A' && cp <= 'Z' ? cp + 0x20 : cp;
+    }
+
+    if(cp >= 0x00C0 && cp <= 0x00DE && cp != 0x00D7)
+    {
+        return cp + 0x20;
+    }
+
+    if(turkish && cp == 0x0130) // İ -> i
+    {
+        return 'i';
+    }
+
+    if((cp >= 0x0100 && cp <= 0x0137) || (cp >= 0x014A && cp <= 0x0177))
+    {
+        return (cp & 1) == 0 ? cp + 1 : cp;
+    }
+    if(cp >= 0x0139 && cp <= 0x0147)
+    {
+        return (cp & 1) != 0 ? cp + 1 : cp;
+    }
+    if(cp >= 0x0179 && cp <= 0x017D)
+    {
+        return (cp & 1) != 0 ? cp + 1 : cp;
+    }
+
+    return cp;
+}
+
+// Decodes one UTF-8 sequence at text[i]; returns the code point and advances
+// i. Sequences beyond 2 bytes (and malformed bytes) come back as themselves,
+// marked unmappable, so they pass through the transform byte-identically.
+uint32_t next_codepoint(const std::string& text, size_t& i, bool& mappable)
+{
+    const auto b0 = static_cast<unsigned char>(text[i]);
+
+    if(b0 < 0x80)
+    {
+        ++i;
+        mappable = true;
+        return b0;
+    }
+
+    if((b0 & 0xE0) == 0xC0 && i + 1 < text.size() &&
+       (static_cast<unsigned char>(text[i + 1]) & 0xC0) == 0x80)
+    {
+        const auto b1 = static_cast<unsigned char>(text[i + 1]);
+        i += 2;
+        mappable = true;
+        return (static_cast<uint32_t>(b0 & 0x1F) << 6) | (b1 & 0x3F);
+    }
+
+    ++i;
+    mappable = false;
+    return b0;
+}
+
+void append_codepoint(std::string& out, uint32_t cp)
+{
+    if(cp < 0x80)
+    {
+        out += static_cast<char>(cp);
+    }
+    else if(cp < 0x800)
+    {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+    else
+    {
+        // Nothing in the two supported blocks encodes to three bytes, but a
+        // pass-through of an unmapped point must still round-trip.
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+} // namespace
+
 void Container::transform_text(std::string& text, litehtml::text_transform tt)
 {
-    // ASCII-only. Locale-sensitive casing (Turkish i/I, for example) needs a
-    // full Unicode case table and is deliberately out of scope here.
-    switch(tt)
+    if(tt == litehtml::text_transform_none || text.empty())
     {
-    case litehtml::text_transform_uppercase:
-        for(char& c : text)
-        {
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        }
-        break;
-
-    case litehtml::text_transform_lowercase:
-        for(char& c : text)
-        {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-        break;
-
-    case litehtml::text_transform_capitalize:
-    {
-        bool at_word_start = true;
-        for(char& c : text)
-        {
-            if(at_word_start)
-            {
-                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-            }
-            at_word_start = std::isspace(static_cast<unsigned char>(c)) != 0;
-        }
-        break;
+        return;
     }
 
-    case litehtml::text_transform_none:
-    default: break;
+    const bool turkish = language_is_turkish();
+
+    // Rebuilt rather than edited in place: the Turkish i changes byte length
+    // in both directions (i is one byte, İ is two).
+    std::string out;
+    out.reserve(text.size() + 8);
+
+    bool at_word_start = true;
+
+    for(size_t i = 0; i < text.size();)
+    {
+        bool     mappable = false;
+        uint32_t cp       = next_codepoint(text, i, mappable);
+
+        if(!mappable)
+        {
+            out += static_cast<char>(cp);
+            continue;
+        }
+
+        switch(tt)
+        {
+        case litehtml::text_transform_uppercase:
+            append_codepoint(out, simple_upper(cp, turkish));
+            break;
+
+        case litehtml::text_transform_lowercase:
+            append_codepoint(out, simple_lower(cp, turkish));
+            break;
+
+        case litehtml::text_transform_capitalize:
+            append_codepoint(out, at_word_start ? simple_upper(cp, turkish) : cp);
+            at_word_start = cp < 0x80 && std::isspace(static_cast<int>(cp)) != 0;
+            break;
+
+        default:
+            append_codepoint(out, cp);
+            break;
+        }
     }
+
+    text = std::move(out);
 }
 
 void Container::import_css(std::string& text, const std::string& url, std::string& baseurl)
@@ -937,8 +1091,8 @@ void Container::get_media_features(litehtml::media_features& media) const
 
 void Container::get_language(std::string& language, std::string& culture) const
 {
-    language = "en";
-    culture.clear();
+    language = m_language;
+    culture  = m_culture;
 }
 
 } // namespace lhu

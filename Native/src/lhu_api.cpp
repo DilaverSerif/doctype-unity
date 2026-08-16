@@ -502,6 +502,23 @@ try
 }
 LHU_API_CATCH_VOID(ctx)
 
+void lhu_set_language(LhuContext* ctx, const char* language, const char* culture)
+try
+{
+    if(!ctx)
+    {
+        return;
+    }
+
+    // No invalidation on purpose: text-transform runs when text nodes compute
+    // their styles, so the language only matters to parses that have not
+    // happened yet. The header says "takes effect for documents loaded after
+    // the call", and making that true retroactively would mean a full restyle
+    // for a setting hosts configure exactly once at startup.
+    ctx->container.set_language(language ? language : "en", culture ? culture : "");
+}
+LHU_API_CATCH_VOID(ctx)
+
 void lhu_set_viewport(LhuContext* ctx, float width, float height)
 try
 {

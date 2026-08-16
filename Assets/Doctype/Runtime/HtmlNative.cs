@@ -155,6 +155,9 @@ namespace Doctype
         public static extern int lhu_scroll(IntPtr ctx, float dx, float dy, float x, float y);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void lhu_set_language(IntPtr ctx, string language, string culture);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         public static extern int lhu_set_focus(IntPtr ctx, string selector);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
