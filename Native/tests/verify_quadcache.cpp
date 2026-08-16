@@ -495,6 +495,8 @@ int main()
 {
     const char* font_env = std::getenv("LHU_FONT");
     const char* regular_candidates[] = {font_env, "/System/Library/Fonts/Supplemental/Arial.ttf",
+                                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
                                         "/system/fonts/Roboto-Regular.ttf"};
 
     std::vector<uint8_t> regular;
@@ -515,7 +517,17 @@ int main()
         return 1;
     }
 
-    const auto bold = read_file("/System/Library/Fonts/Supplemental/Arial Bold.ttf");
+    std::vector<uint8_t> bold;
+    for(const char* c : {"/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"})
+    {
+        bold = read_file(c);
+        if(!bold.empty())
+        {
+            break;
+        }
+    }
 
     // The cache is always on for p.on and always off for p.off. E1 is off for
     // p.off unconditionally (that is what makes it a baseline) and comes from

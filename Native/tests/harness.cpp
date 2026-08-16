@@ -170,6 +170,32 @@ void sample_pixel(const LhuFrame& frame, int w, int h, int px, int py, uint8_t o
 std::string g_out_dir = ".";
 std::string g_root;
 
+// The proportional font the non-Ahem tests use. Arial on macOS, DejaVu on a
+// Linux CI runner; the FontManager falls back to the first registered face
+// (Ahem) when none of these exist, so the harness runs anywhere -- exact
+// glyph metrics just stop being Arial's, which no check depends on.
+std::vector<uint8_t> read_proportional_font(bool bold)
+{
+    const char* candidates[] = {
+        bold ? "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+             : "/System/Library/Fonts/Supplemental/Arial.ttf",
+        bold ? "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+             : "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        bold ? "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+             : "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    };
+
+    for(const char* path : candidates)
+    {
+        auto data = read_file(path);
+        if(!data.empty())
+        {
+            return data;
+        }
+    }
+    return {};
+}
+
 struct Fixture
 {
     LhuContext* ctx = nullptr;
@@ -184,14 +210,14 @@ struct Fixture
             lhu_register_font(ctx, "ahem", 400, 0, ahem.data(), static_cast<int32_t>(ahem.size()));
         }
 
-        const auto arial = read_file("/System/Library/Fonts/Supplemental/Arial.ttf");
+        const auto arial = read_proportional_font(false);
         if(!arial.empty())
         {
             lhu_register_font(ctx, "arial", 400, 0, arial.data(), static_cast<int32_t>(arial.size()));
             lhu_register_font(ctx, "sans-serif", 400, 0, arial.data(), static_cast<int32_t>(arial.size()));
         }
 
-        const auto arial_bold = read_file("/System/Library/Fonts/Supplemental/Arial Bold.ttf");
+        const auto arial_bold = read_proportional_font(true);
         if(!arial_bold.empty())
         {
             lhu_register_font(ctx, "arial", 700, 0, arial_bold.data(), static_cast<int32_t>(arial_bold.size()));

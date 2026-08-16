@@ -1,0 +1,88 @@
+# Unity EditMode + PlayMode in CI. Manual-only for now: it needs Unity
+# license secrets that plain forks and fresh clones do not have, and a red X
+# on every push from a missing secret would be noise, not signal.
+#
+# To arm it, add repository secrets and run it from the Actions tab:
+#   UNITY_LICENSE   the contents of a Unity_lic.ulf (personal license), or
+#   UNITY_EMAIL + UNITY_PASSWORD (+ UNITY_SERIAL for pro)
+#
+# The desktop test editor is Linux, and the repo only ships macOS/Android/iOS
+# native plugins, so the job cross-compiles the Linux plugin first and drops
+# it into the package with an importer meta scoped to the Linux editor. The
+# checkout stays clean for every other platform.
+name: unity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build the Linux editor plugin
+        run: |
+          cmake -S Native -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux --parallel
+          mkdir -p Assets/Doctype/Plugins/Linux/x86_64
+          cp build-linux/libDoctype.so Assets/Doctype/Plugins/Linux/x86_64/
+          cat > Assets/Doctype/Plugins/Linux/x86_64/libDoctype.so.meta <<'META'
+          fileFormatVersion: 2
+          guid: 3f9c1a7d2b6e4e0f8a5c9d1e7b3a2c4d
+          PluginImporter:
+            externalObjects: {}
+            serializedVersion: 3
+            iconMap: {}
+            executionOrder: {}
+            defineConstraints: []
+            isPreloaded: 0
+            isOverridable: 0
+            isExplicitlyReferenced: 0
+            validateReferences: 1
+            platformData:
+              Any:
+                enabled: 0
+                settings: {}
+              Editor:
+                enabled: 1
+                settings:
+                  CPU: x86_64
+                  DefaultValueInitialized: true
+                  OS: Linux
+              Linux64:
+                enabled: 1
+                settings:
+                  CPU: x86_64
+          userData:
+          assetBundleName:
+          assetBundleVariant:
+          META
+
+      - name: Cache Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: unity-library-${{ hashFiles('Packages/packages-lock.json', 'ProjectSettings/ProjectVersion.txt') }}
+          restore-keys: unity-library-
+
+      - name: Run EditMode + PlayMode
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          projectPath: .
+          testMode: all
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-test-results
+          path: artifacts

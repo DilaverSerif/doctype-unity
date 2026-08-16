@@ -1,0 +1,74 @@
+# Native CI: build the renderer without Unity and run every check that does
+# not need a GPU. This is the fast, license-free gate; Unity EditMode/PlayMode
+# runs live in unity.yml and need secrets this workflow does not.
+name: native
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja and a proportional font
+        run: sudo apt-get update && sudo apt-get install -y ninja-build fonts-dejavu-core
+
+      - name: Configure
+        run: cmake -S Native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLHU_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Harness (140 checks, reference rasterizer included)
+        run: LHU_ROOT="$PWD/Native" ./build/lhu_harness build
+
+      - name: Quad cache verification (693 frame comparisons)
+        run: ./build/lhu_verify_quadcache
+
+  macos:
+    name: macos build + tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same script a developer runs locally, universal binary included.
+      - name: Build bundle + test binaries
+        run: Native/build_macos.sh harness
+
+      - name: Harness (140 checks)
+        run: LHU_ROOT="$PWD/Native" Native/build/macos/bin/lhu_harness Native/build/macos
+
+      - name: Quad cache verification (693 frame comparisons)
+        run: Native/build/macos/bin/lhu_verify_quadcache
+
+  android:
+    name: android arm64 cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      # Build-only: there is no arm64 device here to run tests on. The runner
+      # image ships an NDK and exposes it as ANDROID_NDK_LATEST_HOME.
+      - name: Cross-build arm64-v8a
+        run: |
+          cmake -S Native -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-android --parallel
+
+      - name: Report size
+        run: ls -lh build-android/libDoctype.so

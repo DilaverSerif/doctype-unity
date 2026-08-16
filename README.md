@@ -1,5 +1,7 @@
 # Doctype
 
+[![native](https://github.com/DilaverSerif/doctype-unity/actions/workflows/native.yml/badge.svg)](https://github.com/DilaverSerif/doctype-unity/actions/workflows/native.yml)
+
 HTML and CSS as a game UI for Unity, laid out by
 [litehtml](https://github.com/litehtml/litehtml) and drawn entirely on the GPU.
 No embedded browser, no CPU rasterizer, no per-platform web view. One mesh, one
@@ -82,6 +84,20 @@ Nothing is rasterized on the CPU except glyph coverage, which is cached in an
 atlas and uploaded once.
 
 ## Getting started
+
+### As a package
+
+Unity 6000.0+, Package Manager, "Add package from git URL":
+
+```
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.1.0
+```
+
+Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS
+ship inside the package, so there is nothing to compile. Drop the `#v0.1.0`
+suffix to track master instead of a release.
+
+### From a clone (for development)
 
 ```bash
 git clone https://github.com/DilaverSerif/doctype-unity

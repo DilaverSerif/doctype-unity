@@ -57,6 +57,19 @@ ama tek bir `min` işlemi.
 
 ## Kurulum ve derleme
 
+### UPM ile (önerilen)
+
+Unity 6000.0+, Package Manager, "Add package from git URL":
+
+```
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#v0.1.0
+```
+
+macOS (universal), Android (arm64-v8a) ve iOS native plugin'leri paketle
+birlikte hazır geliyor; derlemeniz gereken bir şey yok. `#v0.1.0` ekini
+kaldırırsanız release yerine master'ı takip edersiniz. Aşağıdaki derleme
+adımları yalnız native tarafı değiştirenler için.
+
 ### macOS (bu makinede doğrulandı)
 
 ```bash

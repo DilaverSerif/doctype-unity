@@ -1,0 +1,64 @@
+# Release: runs on a v* tag. Re-runs the native checks as a gate, verifies the
+# tag matches both version numbers (package.json and LHU_VERSION_STRING), then
+# publishes a GitHub Release carrying the UPM package as a tarball. Consumers
+# do not need the tarball to install; the git URL with the tag is the normal
+# path. The tarball exists so a release is a self-contained artifact.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja and a proportional font
+        run: sudo apt-get update && sudo apt-get install -y ninja-build fonts-dejavu-core
+
+      - name: Build native + tests
+        run: |
+          cmake -S Native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLHU_BUILD_TESTS=ON
+          cmake --build build --parallel
+
+      - name: Gate on the native checks
+        run: |
+          LHU_ROOT="$PWD/Native" ./build/lhu_harness build
+          ./build/lhu_verify_quadcache
+
+      - name: Verify the tag matches the version everywhere
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="$(jq -r .version Assets/Doctype/package.json)"
+          ABI="$(sed -n 's/#define LHU_VERSION_STRING "\(.*\)"/\1/p' Native/src/lhu_api.cpp)"
+          echo "tag=$VERSION package.json=$PKG lhu_version=$ABI"
+          test "$PKG" = "$VERSION"
+          test "$ABI" = "$VERSION"
+
+      - name: Package the UPM tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar -czf "com.dopaminefact.doctype-$VERSION.tgz" -C Assets Doctype
+          ls -lh "com.dopaminefact.doctype-$VERSION.tgz"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "com.dopaminefact.doctype-$VERSION.tgz" \
+            --title "Doctype $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Install in Unity: Package Manager > Add package from git URL:
+
+\`\`\`
+https://github.com/DilaverSerif/doctype-unity.git?path=Assets/Doctype#$GITHUB_REF_NAME
+\`\`\`
+
+Prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS (static lib) are inside the package. All native checks passed on this exact revision before the release was cut."

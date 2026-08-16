@@ -56,3 +56,43 @@ if(ANDROID)
     target_link_options(Doctype PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL)
     target_compile_options(Doctype PRIVATE -ffunction-sections -fdata-sections)
 endif()
+
+# Test binaries, for CI and for anyone without a Mac. build_macos.sh remains
+# the local path on macOS; these targets exist so a plain Linux runner can
+# build and run the same checks. They compile the sources again instead of
+# linking the shared library because the tests exercise everything at once and
+# hidden visibility keeps the .so's internals unreachable from outside.
+option(LHU_BUILD_TESTS "Build lhu_harness and lhu_verify_quadcache" OFF)
+
+if(LHU_BUILD_TESTS)
+    set(LHU_TEST_INCLUDES
+        ${LITEHTML}/include
+        ${LITEHTML}/include/litehtml
+        ${LITEHTML}/src
+        ${LITEHTML}/src/gumbo/include
+        ${LITEHTML}/src/gumbo/include/gumbo
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+
+    add_executable(lhu_harness
+        tests/harness.cpp
+        ${LITEHTML}/containers/test/lodepng.cpp
+        ${LITEHTML_SOURCES}
+        ${GUMBO_SOURCES}
+        ${WRAPPER_SOURCES}
+    )
+    target_include_directories(lhu_harness PRIVATE
+        ${LHU_TEST_INCLUDES}
+        ${LITEHTML}/containers/test
+    )
+
+    add_executable(lhu_verify_quadcache
+        tests/verify_quadcache.cpp
+        ${LITEHTML_SOURCES}
+        ${GUMBO_SOURCES}
+        ${WRAPPER_SOURCES}
+    )
+    target_include_directories(lhu_verify_quadcache PRIVATE ${LHU_TEST_INCLUDES})
+endif()

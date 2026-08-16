@@ -1,0 +1,24 @@
+{
+  "name": "com.dopaminefact.doctype",
+  "version": "0.1.0",
+  "displayName": "Doctype",
+  "description": "HTML/CSS game UI for Unity, laid out by litehtml and drawn entirely on the GPU. No embedded browser, no CPU rasterizer, one draw call per page. Ships prebuilt native plugins for macOS (universal), Android (arm64-v8a) and iOS.",
+  "unity": "6000.0",
+  "license": "MIT",
+  "author": {
+    "name": "Dilaver Serif Karakadioglu",
+    "url": "https://github.com/DilaverSerif"
+  },
+  "keywords": [
+    "html",
+    "css",
+    "ui",
+    "hud",
+    "litehtml",
+    "gpu",
+    "renderer"
+  ],
+  "documentationUrl": "https://github.com/DilaverSerif/doctype-unity",
+  "changelogUrl": "https://github.com/DilaverSerif/doctype-unity/blob/master/Assets/Doctype/CHANGELOG.md",
+  "licensesUrl": "https://github.com/DilaverSerif/doctype-unity/blob/master/LICENSE"
+}
