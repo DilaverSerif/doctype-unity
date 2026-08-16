@@ -1811,6 +1811,14 @@ void compute_dirty_region(LhuContext* ctx, LhuFrame* out, bool trusted)
         const bool lut_same     = ctx->container.grad_lut() == ctx->prev_grad_lut;
         const bool span_changed = prefix < n_then - suffix || prefix < n_now - suffix;
 
+        // The persistent-mesh contract rides on the same trim. The suffix is
+        // only stable in the buffer-offset sense when the counts match; see
+        // the field's comment in lhu_types.h. Filled in for every comparable
+        // outcome, including SCROLL -- the quads of a scrolled frame moved,
+        // so the trim is honest about how little survived.
+        out->stable_prefix = static_cast<int32_t>(prefix);
+        out->stable_suffix = n_now == n_then ? static_cast<int32_t>(suffix) : 0;
+
         // A pending scroll offers a better explanation than a bounding rect:
         // the frame may be the previous one translated. Single view, single
         // axis, LUT untouched -- and then every quad has to prove it. The

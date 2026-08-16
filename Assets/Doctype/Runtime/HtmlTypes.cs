@@ -167,6 +167,16 @@ namespace Doctype
         public float Dirty2Y;
         public float Dirty2W;
         public float Dirty2H;
+
+        // Persistent-mesh contract. The first StablePrefix quads and the last
+        // StableSuffix quads of this buffer are byte-identical to the previous
+        // frame's buffer at the same indices, so the mesh builder only rewrites
+        // the span between them. StableSuffix is nonzero only when the counts
+        // match (a count change slides the tail through the buffer). All-zero
+        // promises nothing and forces a full rewrite, which is also what a
+        // plugin older than these fields leaves behind.
+        public int StablePrefix;
+        public int StableSuffix;
     }
 
     /// <summary>

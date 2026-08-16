@@ -143,6 +143,17 @@ typedef struct LhuFrame
     // to the entered strip (dirty_*) already; this is the opposite one. Zero
     // size when unused.
     float dirty2_x, dirty2_y, dirty2_w, dirty2_h;
+
+    // Persistent-mesh contract. The first `stable_prefix` quads and the last
+    // `stable_suffix` quads of THIS buffer are byte-identical to the previous
+    // frame's buffer at the same indices, so a host that keeps its vertex
+    // buffer alive only has to rewrite the span between them. stable_suffix is
+    // only ever nonzero when the two frames have the same quad count -- a
+    // count change slides the tail through the buffer even though its content
+    // matches. All-zero (a zeroed struct, a plugin older than these fields)
+    // promises nothing and means "rewrite everything".
+    int32_t stable_prefix;
+    int32_t stable_suffix;
 } LhuFrame;
 
 enum LhuDirtyMode

@@ -561,6 +561,55 @@ bool dirty_covers_changes(const std::vector<LhuQuad>& prev, const LhuFrame& cur,
     return true;
 }
 
+// The persistent-mesh contract (stable_prefix / stable_suffix): quads inside
+// the claimed ranges must be byte-identical to the previous frame at the SAME
+// buffer indices, a nonzero suffix may only be claimed when the counts match,
+// and a NONE frame must claim everything -- the host skips its mesh build
+// entirely on NONE, so an undershot claim there would be a stale mesh, not a
+// slow one.
+bool stable_range_sound(const std::vector<LhuQuad>& prev, const LhuFrame& cur, std::string& why)
+{
+    const size_t n_prev = prev.size();
+    const size_t n_cur  = static_cast<size_t>(cur.quad_count);
+    const size_t P      = static_cast<size_t>(cur.stable_prefix);
+    const size_t S      = static_cast<size_t>(cur.stable_suffix);
+
+    if(P > n_cur || P > n_prev || P + S > n_cur)
+    {
+        why = "claimed range exceeds a frame";
+        return false;
+    }
+    if(S > 0 && n_prev != n_cur)
+    {
+        why = "suffix claimed across different quad counts";
+        return false;
+    }
+    if(cur.dirty_mode == LHU_DIRTY_MODE_NONE && P != n_cur)
+    {
+        why = "NONE frame does not claim full stability";
+        return false;
+    }
+
+    for(size_t i = 0; i < P; ++i)
+    {
+        if(std::memcmp(&prev[i], &cur.quads[i], sizeof(LhuQuad)) != 0)
+        {
+            why = "prefix quad " + std::to_string(i) + " differs from the previous frame";
+            return false;
+        }
+    }
+    for(size_t i = n_cur - S; i < n_cur; ++i)
+    {
+        if(std::memcmp(&prev[i], &cur.quads[i], sizeof(LhuQuad)) != 0)
+        {
+            why = "suffix quad " + std::to_string(i) + " differs from the previous frame";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // --- driving both contexts ---------------------------------------------------
 
 void both_load(Pair& p, const std::string& html, const char* user_css, float w, float h)
@@ -1397,6 +1446,13 @@ int main()
             if(!dirty_covers_changes(prev_on, p.f_on, why))
             {
                 fail(pair_name, phase, "dirty region: " + why);
+            }
+
+            ++g_checks;
+            why.clear();
+            if(!stable_range_sound(prev_on, p.f_on, why))
+            {
+                fail(pair_name, phase, "stable range: " + why);
             }
             snapshot();
         };

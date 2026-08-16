@@ -4,6 +4,21 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Persistent mesh with ranged uploads: the frame now carries the stable quad
+  prefix/suffix from the native diff, and the mesh builder keeps its buffers
+  alive and rewrites only the changed span. On the benchmark phone a text
+  mutation's upload fell from 171 KB to 1.4 KB per frame and its CPU from
+  0.93 to 0.66 ms; four mutating panels from 2.7 MB to 5.7 KB and 2.81 to
+  1.69 ms. Pixel-for-pixel equivalence against full rebuilds is pinned by
+  EditMode tests, and the state-transition matrix gained a third oracle that
+  verifies the stable-range claim on every frame of every action pair.
+- The benchmark's vertex columns are now measured at the buffer instead of
+  derived from the quad count.
+
 ## [0.1.0] - 2026-08-16
 
 First packaged release. Working and measured on device (Xiaomi 22101316I,

@@ -41,6 +41,17 @@ namespace Doctype
         /// <summary>Quads drawn in the most recent <see cref="Render"/>.</summary>
         public int LastQuadCount => _meshBuilder.QuadCount;
 
+        /// <summary>Vertices the most recent mesh build actually uploaded.</summary>
+        public int LastUploadedVertices => _meshBuilder.LastUploadedVertices;
+
+        /// <summary>Kilobytes of vertex data uploaded over this renderer's lifetime.</summary>
+        public double UploadedKbTotal => _meshBuilder.UploadedKbTotal;
+
+        // The ranged mesh build leans on the mesh still holding the previous
+        // frame's quads. True whenever this renderer did not consume a frame
+        // it was handed (no target), so the next build rewrites everything.
+        private bool _meshStale = true;
+
         /// <summary>How much of the target the most recent Render repainted.</summary>
         public HtmlDirtyMode LastDirtyMode { get; private set; } = HtmlDirtyMode.Full;
 
@@ -151,6 +162,10 @@ namespace Doctype
         {
             if (target == null)
             {
+                // A recorded frame passed this renderer by: the mesh no longer
+                // matches native's previous frame, so the next frame's stable
+                // range describes a buffer this mesh does not hold.
+                _meshStale = true;
                 return;
             }
 
@@ -184,7 +199,17 @@ namespace Doctype
 
             _material.SetTexture(ImageTexId, imageAtlas != null ? imageAtlas : _white);
 
-            _meshBuilder.Build(quads, frame.QuadCount, documentSize);
+            // The stable range comes straight from native's diff. Note that a
+            // forced FULL REPAINT does not force a full mesh rewrite: the mesh
+            // holds content, the target holds pixels, and only the latter was
+            // invalidated. The builder distrusts the claim on its own whenever
+            // its buffers are fresh; the _meshStale guard covers the one case
+            // it cannot see, a frame this renderer never consumed.
+            int stablePrefix = _meshStale ? 0 : frame.StablePrefix;
+            int stableSuffix = _meshStale ? 0 : frame.StableSuffix;
+
+            _meshBuilder.Build(quads, frame.QuadCount, documentSize, stablePrefix, stableSuffix);
+            _meshStale = false;
 
             // Background colours are authored the same way CSS colours are: as
             // sRGB. Both clears write the value straight into an sRGB target,

@@ -158,6 +158,11 @@ namespace Doctype.Samples
             public float RendersPerFrame;
 
             public int QuadsMedian;
+
+            // Measured vertex upload, from the builder's own byte counter.
+            public float VertexKbPerUpload;
+            public float VertexKbPerFrame;
+
             public float HeapKbPerFrame;
             public int Gen0Collections;
 
@@ -489,12 +494,12 @@ namespace Doctype.Samples
         // Lifetime totals at the start of the measured window; everything the
         // report says about CPU is the difference between these and the same
         // numbers at the end, divided by the frames in between.
-        double _parseMs0, _layoutMs0, _drawMs0;
+        double _parseMs0, _layoutMs0, _drawMs0, _uploadKb0;
         int _reloads0, _layouts0, _renders0;
 
         void SnapshotWork(int panels)
         {
-            _parseMs0 = _layoutMs0 = _drawMs0 = 0d;
+            _parseMs0 = _layoutMs0 = _drawMs0 = _uploadKb0 = 0d;
             _reloads0 = _layouts0 = _renders0 = 0;
 
             for (int p = 0; p < panels; p++)
@@ -502,6 +507,7 @@ namespace Doctype.Samples
                 _parseMs0 += _panels[p].ParseMsTotal;
                 _layoutMs0 += _panels[p].LayoutMsTotal;
                 _drawMs0 += _panels[p].DrawMsTotal;
+                _uploadKb0 += _panels[p].UploadedKbTotal;
                 _reloads0 += _panels[p].ReloadCount;
                 _layouts0 += _panels[p].LayoutCount;
                 _renders0 += _panels[p].RenderCount;
@@ -536,7 +542,7 @@ namespace Doctype.Samples
                 Gen0Collections = gen0,
             };
 
-            double parse = 0d, layout = 0d, draw = 0d;
+            double parse = 0d, layout = 0d, draw = 0d, uploadKb = 0d;
             int reloads = 0, layouts = 0, renders = 0;
 
             for (int p = 0; p < scenario.Panels; p++)
@@ -544,12 +550,20 @@ namespace Doctype.Samples
                 parse += _panels[p].ParseMsTotal;
                 layout += _panels[p].LayoutMsTotal;
                 draw += _panels[p].DrawMsTotal;
+                uploadKb += _panels[p].UploadedKbTotal;
                 reloads += _panels[p].ReloadCount;
                 layouts += _panels[p].LayoutCount;
                 renders += _panels[p].RenderCount;
             }
 
             float frames = _measureFrames;
+
+            // Measured, not derived: the persistent mesh uploads the changed
+            // span, so the page's full size no longer predicts the bytes.
+            r.VertexKbPerFrame = (float)((uploadKb - _uploadKb0) / frames);
+            r.VertexKbPerUpload = renders > _renders0
+                ? (float)((uploadKb - _uploadKb0) / (renders - _renders0))
+                : 0f;
 
             r.ParseMsPerFrame = (float)((parse - _parseMs0) / frames);
             r.LayoutMsPerFrame = (float)((layout - _layoutMs0) / frames);
@@ -715,8 +729,8 @@ namespace Doctype.Samples
                    .Append(F(r.DrawMsPerFrame)).Append(',')
                    .Append(F(r.ReloadsPerFrame)).Append(',').Append(F(r.LayoutsPerFrame)).Append(',')
                    .Append(F(r.RendersPerFrame)).Append(',')
-                   .Append(r.QuadsMedian).Append(',').Append(F(VertexKb(r.QuadsMedian))).Append(',')
-                   .Append(F(VertexKb(r.QuadsMedian) * r.RendersPerFrame)).Append(',')
+                   .Append(r.QuadsMedian).Append(',').Append(F(r.VertexKbPerUpload)).Append(',')
+                   .Append(F(r.VertexKbPerFrame)).Append(',')
                    .Append(F(r.HeapKbPerFrame)).Append(',').Append(r.Gen0Collections).Append(',')
                    .Append(Absorbed(r) ? "yes" : "no").Append(',')
                    .Append(r.CacheFramesFast).Append(',').Append(r.CacheFramesPartial).Append(',')
@@ -771,21 +785,10 @@ namespace Doctype.Samples
                           $"parse {F(r.ParseMsPerFrame),5} + layout {F(r.LayoutMsPerFrame),5} + " +
                           $"draw {F(r.DrawMsPerFrame),5}  runs/frame {F(r.ReloadsPerFrame)}/" +
                           $"{F(r.LayoutsPerFrame)}/{F(r.RendersPerFrame)}  quads {r.QuadsMedian,5}  " +
-                          $"vtx {F(VertexKb(r.QuadsMedian) * r.RendersPerFrame),6} KB/frame  " +
+                          $"vtx {F(r.VertexKbPerFrame),6} KB/frame  " +
                           $"gc0 {r.Gen0Collections}");
             }
         }
-
-        /// <summary>
-        /// Bytes the mesh re-uploads on one render. Not measured — derived,
-        /// because it is exactly determined: every quad is four vertices of
-        /// <see cref="HtmlMeshBuilder.BytesPerVertex"/> bytes and six 32-bit
-        /// indices, and the whole buffer goes up every time. Multiply by
-        /// renders-per-frame for what a frame actually costs; an idle HUD
-        /// renders zero times and uploads nothing.
-        /// </summary>
-        static float VertexKb(int quads) =>
-            quads * (4 * HtmlMeshBuilder.BytesPerVertex + 6 * 4) / 1024f;
 
         static string F(float v) =>
             v < 0f ? "n/a" : v.ToString("0.00", CultureInfo.InvariantCulture);
@@ -862,7 +865,7 @@ namespace Doctype.Samples
                    .Append(" / d ").Append(F(r.DrawMsPerFrame))
                    .Append(") &middot; gpu ").Append(F(r.GpuMsMedian))
                    .Append(" &middot; ").Append(r.QuadsMedian).Append(" quad / ")
-                   .Append(F(VertexKb(r.QuadsMedian) * r.RendersPerFrame)).Append(" KB/kare")
+                   .Append(F(r.VertexKbPerFrame)).Append(" KB/kare")
                    .Append("</div></div>");
             }
 

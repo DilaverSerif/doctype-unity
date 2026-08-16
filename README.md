@@ -151,15 +151,20 @@ size of a real HUD panel.
 
 | scenario | quads | CPU ms/frame | GPU ms | vertex KB/frame |
 |---|---|---|---|---|
-| no HUD at all | 0 | 0.00 | 2.75 | 0 |
-| HUD up, nothing changing | 381 | **0.00** | **3.15** | **0** |
-| four HUDs up, nothing changing | 1524 | **0.00** | **4.64** | **0** |
-| one text node changed per frame | 383 | **0.93** | **3.35** | 171 |
-| one inline style changed per frame | 383 | **1.08** | **3.50** | 165 |
-| scrolled every frame | 410 | 1.45 | **4.34** | 183 |
-| resized every frame | 412 | 4.45 | **8.53** | 183 |
-| re-parsed every frame (negative control) | 384 | 12.25 | **4.22** | 171 |
-| four panels, one text node each | 1532 | **2.81** | **5.16** | 2729 |
+| no HUD at all | 0 | 0.00 | 2.70 | 0 |
+| HUD up, nothing changing | 381 | **0.00** | **3.17** | **0** |
+| four HUDs up, nothing changing | 1524 | **0.00** | **4.60** | **0** |
+| one text node changed per frame | 383 | **0.66** | **3.30** | **1.4** |
+| one inline style changed per frame | 383 | **0.90** | **3.45** | **0.3** |
+| scrolled every frame | 410 | 1.32 | **4.17** | 170 |
+| resized every frame | 412 | 4.40 | **8.51** | 174 |
+| re-parsed every frame (negative control) | 384 | 12.16 | **4.25** | 98 |
+| four panels, one text node each | 1532 | **1.69** | **5.12** | **5.7** |
+
+The vertex column is measured at the buffer, not derived from the quad count:
+since the mesh became persistent it is the bytes the changed span actually
+uploads, and a full-page number in it (scroll, resize, re-parse) means the
+frame genuinely rewrote everything.
 
 ### An unchanged HUD does no renderer work
 
@@ -308,6 +313,36 @@ One consequence: `RenderScale` used to be the big lever, and now it only
 matters for full redraws. A mutating panel at half resolution measures 3.19 ms
 against 3.34 at full, because the dirty region is small either way.
 
+### The mesh upload no longer scales with the page either
+
+The last piece of per-frame work that still walked the whole document was the
+bridge between native and the GPU: however small the dirty rect, the mesh
+builder re-emitted every quad and re-uploaded the whole vertex buffer. The
+native diff already knew better -- its prefix/suffix trim isolates the changed
+span exactly -- so the frame now carries that answer across the ABI as a
+stable prefix and suffix, and the mesh keeps its buffers alive and rewrites
+only the span between them. The bookkeeping has one subtlety: the builder
+drops quads (empty, fully transparent, border bands clipped to nothing), so
+native indices are translated to vertex offsets through an emitted-count
+prefix sum, which is exactly as trustworthy as the byte-identical prefix it
+describes. A changed quad count slides the tail through the buffer, and the
+tail is then rewritten too; content-wise it never changes, position-wise it
+must.
+
+On the phone, a text change fell from 171 KB of upload per frame to 1.4 KB
+and its CPU from 0.93 to 0.66 ms; four mutating panels fell from 2.7 MB to
+5.7 KB and from 2.81 to 1.69 ms. The GPU column did not move, which is the
+bandwidth experiment's old verdict confirmed from the other side: uploading
+was never what the GPU was waiting for, it was what the CPU was doing. Full
+rewrites still exist and still say so in the table -- a scroll translates
+almost every quad, a resize re-lays them, a re-parse re-records them -- and a
+renderer that skipped a frame or grew its buffers falls back to a full
+rewrite on its own, because the ranged path is only ever an answer to "is the
+previous frame still resident", never an assumption. The state-transition
+matrix gained a third oracle for exactly this claim: every pair of actions,
+every frame, the stable range must describe quads that really are
+byte-identical at the same offsets.
+
 ### Re-parsing is the expensive thing, so don't
 
 Rebuilding a document from a string costs 12.3 ms of CPU, of which **10.7 ms is
@@ -394,8 +429,8 @@ this reason; the scale setter had not.
 ## Testing
 
 ```bash
-Native/build_macos.sh harness        # 140 checks, no Unity and no GPU
-Native/build/macos/bin/lhu_verify_quadcache   # 1857 frame comparisons, incl. the state matrix
+Native/build_macos.sh harness        # 143 checks, no Unity and no GPU
+Native/build/macos/bin/lhu_verify_quadcache   # 2433 frame comparisons, incl. the state matrix
 Native/bench_android.sh              # CPU benchmark on a real phone, no Unity
 ```
 

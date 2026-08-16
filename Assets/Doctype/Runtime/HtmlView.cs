@@ -130,6 +130,11 @@ namespace Doctype
         /// <summary>Quads drawn in the last frame — a direct measure of GPU cost.</summary>
         public int QuadCount => _renderer?.LastQuadCount ?? 0;
 
+        /// <summary>Kilobytes of vertex data uploaded over this view's lifetime.
+        /// With the persistent mesh this grows by the changed span, not by the
+        /// page; the benchmark's vertex column is the per-frame difference.</summary>
+        public double UploadedKbTotal => _renderer?.UploadedKbTotal ?? 0d;
+
         /// <summary>How much of the surface the last render repainted.</summary>
         public HtmlDirtyMode LastDirtyMode => _renderer?.LastDirtyMode ?? HtmlDirtyMode.Full;
 

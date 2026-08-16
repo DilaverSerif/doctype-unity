@@ -893,6 +893,15 @@ void test_dirty_region()
     check(f.dirty_h < 200.f, "and stays far from the whole page");
     check(f.dirty_y > 60.f, "rows above the change are outside it");
 
+    // The persistent-mesh contract must be USEFUL here, not just sound: a
+    // same-shape change in the middle of the page leaves quads untouched on
+    // both sides, and claiming zero would quietly turn every ranged mesh
+    // upload back into a full one. (Soundness -- the claimed quads really are
+    // identical -- is the matrix's third oracle in verify_quadcache.)
+    check(f.stable_prefix > 0, "a middle-of-page change claims a stable prefix");
+    check(f.stable_suffix > 0, "and a stable suffix");
+    check(f.stable_prefix + f.stable_suffix < f.quad_count, "without claiming the changed span");
+
     // A text that changes glyph COUNT inserts quads. Pairwise diffing would
     // smear the dirt over everything after the insertion point; the
     // prefix/suffix diff must keep it local.

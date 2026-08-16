@@ -93,8 +93,29 @@ namespace Doctype
         private NativeArray<uint> _indices;
         private int _capacityQuads;
 
+        // Persistent-mesh state. The GPU buffers are sized to capacity and the
+        // mesh is never cleared between frames, so a frame whose stable
+        // prefix/suffix (see HtmlFrame) says most quads did not move only
+        // rewrites the span between them. The builder filters quads (empty,
+        // transparent, clipped-away border bands), so native quad indices do
+        // not map 1:1 onto vertex offsets; _emittedBefore is the prefix sum
+        // that translates one into the other, and it is exactly as valid as
+        // the byte-identical prefix it describes, because the drop decision is
+        // a pure function of the quad's bytes.
+        private int[] _emittedBefore; // emitted quads before native index q
+        private int _lastNativeCount;
+        private int _lastEmitted;
+        private bool _valid;
+
         /// <summary>Number of quads in the last built mesh.</summary>
         public int QuadCount { get; private set; }
+
+        /// <summary>Vertices actually uploaded by the last build — the measured
+        /// cost a ranged rewrite avoids paying in full.</summary>
+        public int LastUploadedVertices { get; private set; }
+
+        /// <summary>Kilobytes of vertex data uploaded over this builder's lifetime.</summary>
+        public double UploadedKbTotal { get; private set; }
 
         public Mesh Mesh => _mesh;
 
@@ -159,41 +180,196 @@ namespace Doctype
                                                 NativeArrayOptions.UninitializedMemory);
             _indices = new NativeArray<uint>(capacity * 6, Allocator.Persistent,
                                              NativeArrayOptions.UninitializedMemory);
+            _emittedBefore = new int[capacity + 1];
             _capacityQuads = capacity;
+
+            // The index pattern never depends on content — quad k is always
+            // {4k, 4k+1, 4k+2, 4k, 4k+2, 4k+3} — so it is written once per
+            // capacity and never touched again; per frame only the submesh's
+            // index COUNT moves.
+            for (int k = 0; k < capacity; k++)
+            {
+                uint b = (uint)(k * 4);
+                int j = k * 6;
+                _indices[j + 0] = b;
+                _indices[j + 1] = b + 1;
+                _indices[j + 2] = b + 2;
+                _indices[j + 3] = b;
+                _indices[j + 4] = b + 2;
+                _indices[j + 5] = b + 3;
+            }
+
+            // GPU buffers live at capacity, so a ranged frame can rewrite a
+            // span without the mesh being cleared or its params re-sent.
+            _mesh.Clear(true);
+            _mesh.SetVertexBufferParams(capacity * 4, Layout);
+            _mesh.SetIndexBufferParams(capacity * 6, IndexFormat.UInt32);
+            _mesh.SetIndexBufferData(_indices, 0, 0, capacity * 6, MeshUpdateFlags.DontValidateIndices);
+            _mesh.subMeshCount = 1;
+            _mesh.SetSubMesh(0, new SubMeshDescriptor(0, 0, MeshTopology.Triangles),
+                             MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+
+            // Whatever the old buffers held is gone; the next build is full.
+            _valid = false;
         }
 
         /// <summary>
-        /// Rebuilds the mesh from a recorded frame.
+        /// Rebuilds the whole mesh from a recorded frame.
         /// </summary>
         public void Build(NativeArray<HtmlQuad> quads, int count, Vector2 documentSize)
         {
-            QuadCount = 0;
+            Build(quads, count, documentSize, 0, 0);
+        }
 
+        /// <summary>
+        /// Rebuilds the mesh, rewriting only the span the frame's stable
+        /// prefix/suffix leaves open when the previous build is still resident.
+        /// Pass zeros to force a full rewrite.
+        /// </summary>
+        public void Build(NativeArray<HtmlQuad> quads, int count, Vector2 documentSize,
+                          int stablePrefix, int stableSuffix)
+        {
             if (count <= 0 || !quads.IsCreated)
             {
-                _mesh.Clear();
+                QuadCount = 0;
+                LastUploadedVertices = 0;
+                _lastNativeCount = 0;
+                _lastEmitted = 0;
+
+                if (_capacityQuads > 0)
+                {
+                    // Keep the buffers; an empty frame is a submesh of zero
+                    // indices, not a destroyed mesh.
+                    _mesh.SetSubMesh(0, new SubMeshDescriptor(0, 0, MeshTopology.Triangles),
+                                     MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+                    _emittedBefore[0] = 0;
+                    _valid = true;
+                }
+                else
+                {
+                    _mesh.Clear();
+                    _valid = false;
+                }
+
                 return;
             }
 
-            EnsureCapacity(count);
+            EnsureCapacity(count); // resets _valid when it reallocates
 
-            int v = 0;
-            int i = 0;
+            // The claim is only usable against the exact buffer the last build
+            // left behind. Anything that broke that continuity — a fresh
+            // capacity, a caller that skipped a frame — falls back to full.
+            // The suffix additionally requires equal counts, which native
+            // already guarantees; distrust it anyway, the check is one compare.
+            int prefix = stablePrefix;
+            int suffix = stableSuffix;
 
-            for (int q = 0; q < count; q++)
+            if (!_valid || prefix < 0 || suffix < 0)
             {
-                HtmlQuad quad = quads[q];
+                prefix = 0;
+                suffix = 0;
+            }
+            else
+            {
+                if (suffix > 0 && count != _lastNativeCount)
+                {
+                    suffix = 0;
+                }
 
+                int maxCommon = Mathf.Min(count, _lastNativeCount);
+                prefix = Mathf.Min(prefix, maxCommon);
+                suffix = Mathf.Min(suffix, count - prefix);
+            }
+
+            // Vertex offsets translate through the emitted-quad prefix sum: the
+            // prefix quads are byte-identical, so their drop decisions and
+            // therefore their emitted count are exactly last frame's.
+            int emitted = prefix > 0 ? _emittedBefore[prefix] : 0;
+            int v = emitted * 4;
+            int uploadStart = v;
+
+            int middleEnd = count - suffix;
+            int oldSuffixEmitStart = suffix > 0 ? _emittedBefore[middleEnd] : _lastEmitted;
+            int oldMiddleEmitted = oldSuffixEmitStart - emitted;
+
+            for (int q = prefix; q < middleEnd; q++)
+            {
+                if (EmitQuad(quads[q], ref v))
+                {
+                    emitted++;
+                }
+
+                _emittedBefore[q + 1] = emitted;
+            }
+
+            int totalEmitted;
+
+            if (suffix > 0 && emitted - _emittedBefore[prefix] == oldMiddleEmitted)
+            {
+                // The middle emitted exactly as many quads as it replaced, so
+                // the suffix vertices already sit at their final offsets and
+                // _emittedBefore's suffix entries still tell the truth.
+                totalEmitted = _lastEmitted;
+            }
+            else
+            {
+                // The tail slid (or the suffix claim was refused): re-emit it
+                // at its new offsets. Its content is unchanged — emission is a
+                // pure function of the quad — but its position is not.
+                for (int q = middleEnd; q < count; q++)
+                {
+                    if (EmitQuad(quads[q], ref v))
+                    {
+                        emitted++;
+                    }
+
+                    _emittedBefore[q + 1] = emitted;
+                }
+
+                totalEmitted = emitted;
+            }
+
+            int uploadVerts = v - uploadStart;
+
+            if (uploadVerts > 0)
+            {
+                _mesh.SetVertexBufferData(_vertices, uploadStart, uploadStart, uploadVerts, 0,
+                                          MeshUpdateFlags.DontValidateIndices);
+            }
+
+            _mesh.SetSubMesh(0, new SubMeshDescriptor(0, totalEmitted * 6, MeshTopology.Triangles),
+                             MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+
+            _mesh.bounds = new Bounds(new Vector3(documentSize.x * 0.5f, documentSize.y * 0.5f, 0f),
+                                      new Vector3(documentSize.x, documentSize.y, 1f));
+
+            QuadCount = totalEmitted;
+            LastUploadedVertices = uploadVerts;
+            UploadedKbTotal += uploadVerts * (double)BytesPerVertex / 1024d;
+            _lastNativeCount = count;
+            _lastEmitted = totalEmitted;
+            _valid = true;
+        }
+
+        /// <summary>
+        /// Writes one quad's four vertices at <paramref name="v"/>, or drops it
+        /// (empty, fully transparent, or a border band clipped to nothing).
+        /// A pure function of the quad's bytes — the ranged build depends on
+        /// that: identical bytes must always emit identical vertices, or none.
+        /// </summary>
+        private bool EmitQuad(HtmlQuad quad, ref int v)
+        {
+            {
                 if (quad.W <= 0f || quad.H <= 0f)
                 {
-                    continue;
+                    return false;
                 }
 
                 // A fully transparent quad still costs fill rate; drop it here.
                 if ((quad.Color >> 24) == 0 && quad.Type != HtmlQuadType.Image &&
                     quad.Type < HtmlQuadType.LinearGradient)
                 {
-                    continue;
+                    return false;
                 }
 
                 float pad = quad.Type == HtmlQuadType.Glyph ? 0f : AntiAliasPad;
@@ -235,7 +411,7 @@ namespace Doctype
 
                     if (x1 <= x0 || y1 <= y0)
                     {
-                        continue;
+                        return false;
                     }
                 }
 
@@ -300,37 +476,9 @@ namespace Doctype
                 template.Uv = new Vector4(u0, v1, typeF, gradF);
                 _vertices[v + 3] = template;
 
-                _indices[i + 0] = (uint)(v + 0);
-                _indices[i + 1] = (uint)(v + 1);
-                _indices[i + 2] = (uint)(v + 2);
-                _indices[i + 3] = (uint)(v + 0);
-                _indices[i + 4] = (uint)(v + 2);
-                _indices[i + 5] = (uint)(v + 3);
-
                 v += 4;
-                i += 6;
-                QuadCount++;
+                return true;
             }
-
-            _mesh.Clear(true);
-
-            if (v == 0)
-            {
-                return;
-            }
-
-            _mesh.SetVertexBufferParams(v, Layout);
-            _mesh.SetVertexBufferData(_vertices, 0, 0, v, 0, MeshUpdateFlags.DontValidateIndices);
-
-            _mesh.SetIndexBufferParams(i, IndexFormat.UInt32);
-            _mesh.SetIndexBufferData(_indices, 0, 0, i, MeshUpdateFlags.DontValidateIndices);
-
-            _mesh.subMeshCount = 1;
-            _mesh.SetSubMesh(0, new SubMeshDescriptor(0, i, MeshTopology.Triangles),
-                             MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
-
-            _mesh.bounds = new Bounds(new Vector3(documentSize.x * 0.5f, documentSize.y * 0.5f, 0f),
-                                      new Vector3(documentSize.x, documentSize.y, 1f));
         }
     }
 }
